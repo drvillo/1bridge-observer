@@ -8,7 +8,7 @@ import { buildGovernanceSource, startGovernanceSource } from './governance-sourc
 function config(history: Awaited<ReturnType<typeof buildGovernanceSource>>, baseUrl: string): ObserverConfig {
   return { sourceBaseUrl: baseUrl, feedId: history.signedAnchor.anchor.feedId,
     anchorPin: history.anchorPin, signedAnchor: authority.encodeBase64Url(authority.canonicalBytes(history.signedAnchor)),
-    databaseUrl: 'postgres://db.example/observer', cronSecret: 'x'.repeat(32) }
+    databaseUrl: 'postgres://db.example/observer', databaseSchema: 'public', cronSecret: 'x'.repeat(32) }
 }
 
 const budget = { maxLeaves: 64, maxCheckpoints: 16 }

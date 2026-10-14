@@ -15,7 +15,7 @@ function config(history: GovernanceSourceHistory, sourceBaseUrl: string): Observ
   return { sourceBaseUrl, feedId: history.signedAnchor.anchor.feedId,
     anchorPin: history.anchorPin,
     signedAnchor: authority.encodeBase64Url(authority.canonicalBytes(history.signedAnchor)),
-    databaseUrl: databaseUrl!, cronSecret: 'x'.repeat(32) }
+    databaseUrl: databaseUrl!, databaseSchema: 'public', cronSecret: 'x'.repeat(32) }
 }
 
 describe('durable bounded source poll', () => {

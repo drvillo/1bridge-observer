@@ -28,7 +28,7 @@ function vector(): GovernanceVector {
 function config(fixture: GovernanceVector, sourceBaseUrl: string): ObserverConfig {
   return { sourceBaseUrl, feedId: fixture.expected.feedId,
     anchorPin: fixture.anchorPin, signedAnchor: fixture.signedAnchor,
-    databaseUrl: 'postgres://db.example/observer', cronSecret: 'x'.repeat(32) }
+    databaseUrl: 'postgres://db.example/observer', databaseSchema: 'public', cronSecret: 'x'.repeat(32) }
 }
 
 function sourceHistory(fixture: GovernanceVector) {

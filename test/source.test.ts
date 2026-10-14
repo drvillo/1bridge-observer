@@ -16,7 +16,7 @@ beforeEach(async () => {
   config = {
     sourceBaseUrl: fixture.baseUrl, feedId: fixture.feedId,
     anchorPin: fixture.anchorPin, signedAnchor: fixture.signedAnchor,
-    databaseUrl: 'postgres://db.example/observer', cronSecret: 'x'.repeat(32),
+    databaseUrl: 'postgres://db.example/observer', databaseSchema: 'public', cronSecret: 'x'.repeat(32),
   }
 })
 afterEach(async () => { vi.unstubAllGlobals(); await fixture.close() })

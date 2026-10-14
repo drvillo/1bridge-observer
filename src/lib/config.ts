@@ -13,6 +13,7 @@ export interface ObserverConfig {
   anchorPin: string
   signedAnchor: string
   databaseUrl: string
+  databaseSchema: string
   cronSecret: string
 }
 
@@ -59,12 +60,17 @@ export function loadObserverConfig(env: Environment): ObserverConfig {
     throw new Error('Invalid DATABASE_URL')
   }
 
+  const databaseSchema = env.OBSERVER_SCHEMA === undefined ? 'public' : env.OBSERVER_SCHEMA
+  if (!/^[a-z_][a-z0-9_]{0,62}$/.test(databaseSchema)) {
+    throw new Error('Invalid OBSERVER_SCHEMA')
+  }
+
   const cronSecret = env.CRON_SECRET
   if (!cronSecret || Buffer.byteLength(cronSecret, 'utf8') < 32) {
     throw new Error('Invalid CRON_SECRET')
   }
 
-  return { sourceBaseUrl, feedId, anchorPin, signedAnchor, databaseUrl, cronSecret }
+  return { sourceBaseUrl, feedId, anchorPin, signedAnchor, databaseUrl, databaseSchema, cronSecret }
 }
 
 export async function verifyObserverAnchor(config: ObserverConfig): Promise<AuthoritySnapshot> {

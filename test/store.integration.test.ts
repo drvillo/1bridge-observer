@@ -18,7 +18,7 @@ const vector = authority.parseCanonical(readFileSync(new URL('./governance-v1.js
 }
 const config: ObserverConfig = { sourceBaseUrl: 'https://evidence.example', feedId: vector.expected.feedId,
   anchorPin: vector.anchorPin, signedAnchor: vector.signedAnchor,
-  databaseUrl, cronSecret: 'x'.repeat(32) }
+  databaseUrl, databaseSchema: 'observer_test', cronSecret: 'x'.repeat(32) }
 
 async function finalTarget(): Promise<ProvisionalFeedHead> {
   const signedCheckpointBytes = authority.decodeBase64Url(vector.checkpoints.at(-1)!)
@@ -39,7 +39,7 @@ describe('durable observer store', () => {
   let store: ObserverStore
   const inspector = new pg.Pool({ connectionString: databaseUrl, max: 1 })
 
-  beforeAll(() => { store = openObserverStore(databaseUrl, 'observer_test') })
+  beforeAll(() => { store = openObserverStore(config.databaseUrl, config.databaseSchema) })
   afterAll(async () => { await store.close(); await inspector.end() })
 
   it('installs the same observer schema twice in the selected schema', async () => {

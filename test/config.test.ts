@@ -28,6 +28,7 @@ describe('loadObserverConfig', () => {
       anchorPin: valid.ANCHOR_PIN,
       signedAnchor: valid.SIGNED_ANCHOR,
       databaseUrl: valid.DATABASE_URL,
+      databaseSchema: 'public',
       cronSecret: valid.CRON_SECRET,
     })
   })
@@ -86,6 +87,17 @@ describe('loadObserverConfig', () => {
     expect(loadObserverConfig({ ...valid, DATABASE_URL: 'postgres://db.example/observer' }).databaseUrl)
       .toBe('postgres://db.example/observer')
   })
+
+  it('selects a dedicated observer schema inside an existing customer Postgres project', () => {
+    expect(loadObserverConfig({ ...valid, OBSERVER_SCHEMA: 'customer_observer' }).databaseSchema)
+      .toBe('customer_observer')
+  })
+
+  it.each(['public,app', 'app;DROP SCHEMA public', 'UPPERCASE', '', '9observer'])(
+    'rejects unsafe observer schema name %s', schema => {
+      expect(() => loadObserverConfig({ ...valid, OBSERVER_SCHEMA: schema })).toThrow(/OBSERVER_SCHEMA/)
+    },
+  )
 })
 
 describe('verifyObserverAnchor', () => {
