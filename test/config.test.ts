@@ -1,11 +1,21 @@
-import { describe, expect, it } from 'vitest'
-import { loadObserverConfig } from '../src/lib/config'
+import { beforeAll, describe, expect, it } from 'vitest'
+import {
+  anchorHash,
+  canonicalJson,
+  createAuthorityAnchor,
+  encodeBase64Url,
+  generateSigningKey,
+  signAuthorityAnchor,
+  type SignedAuthorityAnchor,
+} from '@drvillo/1bridge-authority'
+import { loadObserverConfig, verifyObserverAnchor } from '../src/lib/config'
 
 const valid = {
   NODE_ENV: 'production',
   SOURCE_BASE_URL: 'https://evidence.example/',
   FEED_ID: 'a'.repeat(64),
-  CHECKPOINT_PUBLIC_KEY: Buffer.from('checkpoint-key-fixture'.repeat(3)).toString('base64url'),
+  ANCHOR_PIN: 'b'.repeat(64),
+  SIGNED_ANCHOR: Buffer.from('{}').toString('base64url'),
   DATABASE_URL: 'postgresql://observer:private@db.example/observer?sslmode=require',
   CRON_SECRET: 'a customer controlled secret with 32 bytes',
 }
@@ -15,7 +25,8 @@ describe('loadObserverConfig', () => {
     expect(loadObserverConfig(valid)).toEqual({
       sourceBaseUrl: 'https://evidence.example',
       feedId: valid.FEED_ID,
-      checkpointPublicKey: valid.CHECKPOINT_PUBLIC_KEY,
+      anchorPin: valid.ANCHOR_PIN,
+      signedAnchor: valid.SIGNED_ANCHOR,
       databaseUrl: valid.DATABASE_URL,
       cronSecret: valid.CRON_SECRET,
     })
@@ -48,9 +59,12 @@ describe('loadObserverConfig', () => {
     ['non-HTTP scheme', { SOURCE_BASE_URL: 'ftp://evidence.example/' }],
     ['uppercase feed', { FEED_ID: 'A'.repeat(64) }],
     ['short feed', { FEED_ID: 'a'.repeat(63) }],
-    ['padded key', { CHECKPOINT_PUBLIC_KEY: `${valid.CHECKPOINT_PUBLIC_KEY}=` }],
-    ['invalid key alphabet', { CHECKPOINT_PUBLIC_KEY: 'not+base64/key' }],
-    ['short key', { CHECKPOINT_PUBLIC_KEY: 'YWJj' }],
+    ['uppercase anchor pin', { ANCHOR_PIN: 'B'.repeat(64) }],
+    ['short anchor pin', { ANCHOR_PIN: 'b'.repeat(63) }],
+    ['missing anchor pin', { ANCHOR_PIN: undefined }],
+    ['padded signed anchor', { SIGNED_ANCHOR: `${valid.SIGNED_ANCHOR}=` }],
+    ['invalid signed anchor alphabet', { SIGNED_ANCHOR: 'not+base64/anchor' }],
+    ['empty signed anchor', { SIGNED_ANCHOR: '' }],
     ['wrong DB scheme', { DATABASE_URL: 'mysql://db.example/observer' }],
     ['missing DB host', { DATABASE_URL: 'postgresql:///observer' }],
     ['missing DB name', { DATABASE_URL: 'postgresql://db.example/' }],
@@ -71,5 +85,77 @@ describe('loadObserverConfig', () => {
   it('accepts the postgres scheme', () => {
     expect(loadObserverConfig({ ...valid, DATABASE_URL: 'postgres://db.example/observer' }).databaseUrl)
       .toBe('postgres://db.example/observer')
+  })
+})
+
+describe('verifyObserverAnchor', () => {
+  let signed: SignedAuthorityAnchor
+  let pin: string
+  let settings: ReturnType<typeof loadObserverConfig>
+
+  beforeAll(async () => {
+    const [root, recovery, checkpoint] = await Promise.all([
+      generateSigningKey(),
+      generateSigningKey(),
+      generateSigningKey(),
+    ])
+    const anchor = await createAuthorityAnchor({
+      feedId: valid.FEED_ID,
+      workspaceId: 'c'.repeat(64),
+      rootPublicKey: root.publicKey,
+      recoveryPublicKey: recovery.publicKey,
+      checkpointPublicKey: checkpoint.publicKey,
+    })
+    signed = await signAuthorityAnchor(anchor, root, recovery)
+    pin = await anchorHash(anchor)
+    settings = loadObserverConfig({
+      ...valid,
+      ANCHOR_PIN: pin,
+      SIGNED_ANCHOR: encodeBase64Url(new TextEncoder().encode(canonicalJson(signed))),
+    })
+  })
+
+  it('accepts the independently pinned dual-signed anchor and exposes its initial checkpoint key', async () => {
+    const state = await verifyObserverAnchor(settings)
+    expect(state.feedId).toBe(valid.FEED_ID)
+    expect(state.checkpointKeyId).toBe(signed.anchor.checkpointKeyId)
+    expect(state.checkpointKeySpki).toBe(signed.anchor.checkpointKeySpki)
+  })
+
+  it('rejects a valid signed anchor when the configured pin differs', async () => {
+    await expect(verifyObserverAnchor({ ...settings, anchorPin: 'd'.repeat(64) })).rejects.toThrow()
+  })
+
+  it('rejects a valid pinned anchor when the configured feed differs', async () => {
+    await expect(verifyObserverAnchor({ ...settings, feedId: 'd'.repeat(64) })).rejects.toThrow()
+  })
+
+  it('rejects a substituted signed anchor', async () => {
+    const [root, recovery, checkpoint] = await Promise.all([
+      generateSigningKey(),
+      generateSigningKey(),
+      generateSigningKey(),
+    ])
+    const substituted = await signAuthorityAnchor(await createAuthorityAnchor({
+      feedId: valid.FEED_ID,
+      workspaceId: signed.anchor.workspaceId,
+      rootPublicKey: root.publicKey,
+      recoveryPublicKey: recovery.publicKey,
+      checkpointPublicKey: checkpoint.publicKey,
+    }), root, recovery)
+    const encoded = encodeBase64Url(new TextEncoder().encode(canonicalJson(substituted)))
+    await expect(verifyObserverAnchor({ ...settings, signedAnchor: encoded })).rejects.toThrow()
+  })
+
+  it('rejects a matching pin when a possession signature is substituted', async () => {
+    const changed = { ...signed, rootSignature: signed.recoverySignature }
+    const encoded = encodeBase64Url(new TextEncoder().encode(canonicalJson(changed)))
+    await expect(verifyObserverAnchor({ ...settings, signedAnchor: encoded })).rejects.toThrow()
+  })
+
+  it('rejects noncanonical signed-anchor JSON even when base64url is canonical', async () => {
+    const encoded = encodeBase64Url(new TextEncoder().encode(JSON.stringify(signed)))
+    expect(encoded).not.toBe(settings.signedAnchor)
+    await expect(verifyObserverAnchor({ ...settings, signedAnchor: encoded })).rejects.toThrow()
   })
 })

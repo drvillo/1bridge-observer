@@ -1,7 +1,17 @@
+import {
+  authorityStateSnapshot,
+  decodeBase64Url,
+  parseCanonical,
+  verifyAuthorityAnchor,
+  type AuthoritySnapshot,
+  type SignedAuthorityAnchor,
+} from '@drvillo/1bridge-authority'
+
 export interface ObserverConfig {
   sourceBaseUrl: string
   feedId: string
-  checkpointPublicKey: string
+  anchorPin: string
+  signedAnchor: string
   databaseUrl: string
   cronSecret: string
 }
@@ -15,15 +25,18 @@ export function loadObserverConfig(env: Environment): ObserverConfig {
     throw new Error('Invalid FEED_ID')
   }
 
-  const checkpointPublicKey = env.CHECKPOINT_PUBLIC_KEY
-  if (
-    !checkpointPublicKey ||
-    checkpointPublicKey.length < 40 ||
-    checkpointPublicKey.length > 512 ||
-    !/^[A-Za-z0-9_-]+$/.test(checkpointPublicKey) ||
-    Buffer.from(checkpointPublicKey, 'base64url').toString('base64url') !== checkpointPublicKey
-  ) {
-    throw new Error('Invalid CHECKPOINT_PUBLIC_KEY')
+  const anchorPin = env.ANCHOR_PIN
+  if (!anchorPin || !/^[0-9a-f]{64}$/.test(anchorPin)) {
+    throw new Error('Invalid ANCHOR_PIN')
+  }
+
+  const signedAnchor = env.SIGNED_ANCHOR
+  try {
+    if (!signedAnchor || decodeBase64Url(signedAnchor, 16384).length === 0) {
+      throw new TypeError('Missing signed anchor')
+    }
+  } catch {
+    throw new Error('Invalid SIGNED_ANCHOR')
   }
 
   const databaseUrl = env.DATABASE_URL
@@ -51,7 +64,18 @@ export function loadObserverConfig(env: Environment): ObserverConfig {
     throw new Error('Invalid CRON_SECRET')
   }
 
-  return { sourceBaseUrl, feedId, checkpointPublicKey, databaseUrl, cronSecret }
+  return { sourceBaseUrl, feedId, anchorPin, signedAnchor, databaseUrl, cronSecret }
+}
+
+export async function verifyObserverAnchor(config: ObserverConfig): Promise<AuthoritySnapshot> {
+  const serialized = decodeBase64Url(config.signedAnchor, 16384)
+  const signed = parseCanonical(serialized) as unknown as SignedAuthorityAnchor
+  const state = await verifyAuthorityAnchor(signed, config.anchorPin)
+  const snapshot = authorityStateSnapshot(state)
+  if (snapshot.feedId !== config.feedId) {
+    throw new Error('Configured FEED_ID does not match the verified authority anchor')
+  }
+  return snapshot
 }
 
 function parseSourceUrl(value: string | undefined, nodeEnv: string | undefined): string {
