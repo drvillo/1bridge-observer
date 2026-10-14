@@ -55,6 +55,25 @@ describe('mixed governance source over HTTP', () => {
     }
   })
 
+  it('matches independently supplied receipts only after replaying the exact pulled chain', async () => {
+    const history = await buildGovernanceSource()
+    const source = await startGovernanceSource(history)
+    try {
+      const pulled = await pullHistory(config(history, source.baseUrl))
+      const session = await authority.createGovernanceReplaySession(pulled.signedAnchor,
+        history.anchorPin, pulled.checkpoints[0]!)
+      expect(await session.verifyReceipt(history.firstReceipt, pulled.leaves[history.firstReceipt.leafIndex]!)).toBe(false)
+      for (const head of pulled.checkpoints.slice(1)) {
+        const start = session.snapshot().size
+        await session.appendLeaves(pulled.leaves.slice(start, head.statement.size), head)
+        await session.sealCheckpoint(head)
+      }
+      expect(await session.verifyReceipt(history.firstReceipt, pulled.leaves[history.firstReceipt.leafIndex]!)).toBe(true)
+      expect(await session.verifyReceipt(history.secondReceipt, pulled.leaves[history.secondReceipt.leafIndex]!)).toBe(true)
+      expect(await session.verifyReceipt(history.secondReceipt, pulled.leaves[history.firstReceipt.leafIndex]!)).toBe(false)
+    } finally { await source.close() }
+  })
+
   it.each(['wrongRoot', 'wrongPolicy'] as const)(
     'keeps a validly provider-signed %s target provisional until replay rejects it', async candidateName => {
       const history = await buildGovernanceSource()

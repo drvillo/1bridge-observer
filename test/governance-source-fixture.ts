@@ -19,6 +19,8 @@ export interface GovernanceSourceHistory {
   actorKeyIds: string[]
   rotatedPublicKey: CryptoKey
   firstActionHash: string
+  firstReceipt: authority.CompletionReceipt
+  secondReceipt: authority.CompletionReceipt
   secondActionPredecessor: string | null
 }
 
@@ -130,7 +132,7 @@ export async function buildGovernanceSource(): Promise<GovernanceSourceHistory> 
   const resignedFinal = await authority.signCheckpoint(final.statement, rotated)
   return { signedAnchor, anchorPin, leaves, checkpoints, wrongRoot, wrongPolicy, resignedFinal, alternateLastLeaf,
     actorKeyIds: [await authority.signingKeyId(alice.publicKey), await authority.signingKeyId(bob.publicKey)],
-    rotatedPublicKey: rotated.publicKey,
+    rotatedPublicKey: rotated.publicKey, firstReceipt: first.integrated, secondReceipt: second.integrated,
     firstActionHash: first.integrated.actionHash, secondActionPredecessor: second.signed.statement.previousActionHash }
 }
 
