@@ -15,6 +15,7 @@ describe('protected observer poll route', () => {
     const history = await buildGovernanceSource()
     const source = await startGovernanceSource(history)
     const secret = 'a customer controlled observer cron secret'
+    const signer = await authority.generateSigningKey()
     try {
       vi.stubEnv('SOURCE_BASE_URL', source.baseUrl)
       vi.stubEnv('FEED_ID', history.signedAnchor.anchor.feedId)
@@ -23,6 +24,8 @@ describe('protected observer poll route', () => {
       vi.stubEnv('DATABASE_URL', databaseUrl)
       vi.stubEnv('OBSERVER_SCHEMA', 'observer_route')
       vi.stubEnv('CRON_SECRET', secret)
+      vi.stubEnv('OBSERVER_SIGNING_PRIVATE_KEY', await authority.exportSigningPrivateKey(signer.privateKey))
+      vi.stubEnv('OBSERVER_SIGNING_PUBLIC_KEY', await authority.exportSigningPublicKey(signer.publicKey))
       const denied = await GET(new Request('http://localhost/api/poll',
         { headers: { authorization: 'Bearer wrong' } }))
       expect(denied.status).toBe(401)
@@ -31,11 +34,23 @@ describe('protected observer poll route', () => {
 
       const authorized = new Request('http://localhost/api/poll',
         { headers: { authorization: `Bearer ${secret}` } })
+      const unrelated = await authority.generateSigningKey()
+      vi.stubEnv('OBSERVER_SIGNING_PUBLIC_KEY', await authority.exportSigningPublicKey(unrelated.publicKey))
+      const mismatched = await GET(authorized)
+      expect(mismatched.status).toBe(503)
+      expect((await inspector.query("SELECT to_regclass('observer_route.observer_feeds') AS table_name")).rows[0].table_name)
+        .toBeNull()
+      vi.stubEnv('OBSERVER_SIGNING_PUBLIC_KEY', await authority.exportSigningPublicKey(signer.publicKey))
       const first = await GET(authorized)
       expect(first.status).toBe(200)
       expect(await first.json()).toMatchObject({ status: 'accepted', snapshot: { size: history.leaves.length } })
       expect((await inspector.query('SELECT accepted_size FROM observer_route.observer_cursors')).rows[0].accepted_size)
         .toBe('7')
+      const reports = await inspector.query('SELECT signed_report FROM observer_route.observer_reports')
+      expect(reports.rows).toHaveLength(1)
+      const report = authority.parseCanonical(reports.rows[0].signed_report) as unknown as authority.SignedObserverReport
+      expect(await authority.verifyObserverReport(report, signer.publicKey,
+        { feedId: history.signedAnchor.anchor.feedId, anchorPin: history.anchorPin })).toBe(true)
       const repeat = await GET(authorized)
       expect(repeat.status).toBe(200)
       expect(await repeat.json()).toMatchObject({ status: 'up_to_date' })

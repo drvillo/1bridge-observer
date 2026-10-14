@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import pg, { type PoolClient } from 'pg'
 import { canonicalBytes, checkpointHash, decodeBase64Url, hashLeaf, parseCanonical,
-  replayGovernanceHistory, type GovernanceReplaySnapshot, type SignedAuthorityAnchor,
-  type SignedCheckpoint } from '@drvillo/1bridge-authority'
+  observerEvidenceSetDigest, observerFindingHash, replayGovernanceHistory,
+  signObserverReport, signingKeyId, verifyObserverReport,
+  type GovernanceReplaySnapshot, type SignedAuthorityAnchor,
+  type SignedCheckpoint, type SignedObserverReport } from '@drvillo/1bridge-authority'
 import { verifyObserverAnchor, type ObserverConfig } from './config'
 import type { CheckpointPageItem, ProvisionalFeedHead } from './source'
 
@@ -192,13 +194,36 @@ export function openObserverStore(connectionString: string, schema = 'public'): 
   return store
 }
 
-/** Applies the reviewed SQL file atomically on one connection. */
+/** Installs or upgrades the reviewed observer schema atomically on one connection. */
 export async function installObserverSchema(store: ObserverStore): Promise<void> {
-  const sql = readFileSync(new URL('../../schema.sql', import.meta.url), 'utf8')
-  const digest = createHash('sha256').update(sql).digest('hex')
+  const v1 = readFileSync(new URL('../../schema.sql', import.meta.url), 'utf8')
+  const v2 = readFileSync(new URL('../../schema-v2.sql', import.meta.url), 'utf8')
+  const fingerprintSql = readFileSync(new URL('../../schema-fingerprint.sql', import.meta.url), 'utf8')
+  const v1Digest = createHash('sha256').update(v1).digest('hex')
+  const v2Digest = createHash('sha256').update(v2).digest('hex')
   await transaction(store, async client => {
-    await client.query("SELECT set_config('observer.schema_digest', $1, true)", [digest])
-    await client.query(sql)
+    await client.query('SELECT pg_advisory_xact_lock(6704462056185601401)')
+    const marker = await client.query<{ exists: boolean }>(
+      "SELECT to_regclass(format('%I.observer_schema_versions', current_schema())) IS NOT NULL AS exists")
+    let version: number | null = null
+    if (marker.rows[0]?.exists) {
+      const current = await client.query<{ version: number; catalog_fingerprint: string }>(
+        'SELECT version, catalog_fingerprint FROM observer_schema_versions')
+      if (current.rows.length !== 1) throw new TypeError('Invalid observer schema marker')
+      version = current.rows[0]!.version
+      const actual = await client.query<{ catalog_fingerprint: string }>(fingerprintSql)
+      if (actual.rows.length !== 1
+        || actual.rows[0]!.catalog_fingerprint !== current.rows[0]!.catalog_fingerprint) {
+        throw new TypeError('Observer schema catalog has changed')
+      }
+    }
+    if (version === null || version === 1) {
+      await client.query("SELECT set_config('observer.schema_digest', $1, true)", [v1Digest])
+      await client.query(v1)
+    }
+    await client.query("SELECT set_config('observer.previous_schema_digest', $1, true)", [v1Digest])
+    await client.query("SELECT set_config('observer.schema_digest', $1, true)", [v2Digest])
+    await client.query(v2)
   })
 }
 
@@ -538,7 +563,8 @@ export async function acceptObserverTarget(store: ObserverStore, claim: Observer
     await client.query(
       `UPDATE observer_cursors SET accepted_size=$2, accepted_checkpoint_hash=$3,
          staged_next_index=$2, active_attempt_id=NULL, staged_checkpoint_tail_hash=NULL,
-         staged_checkpoint_tail_position=NULL, version=version+1 WHERE feed_id=$1`,
+         staged_checkpoint_tail_position=NULL, version=version+1,
+         report_revision=report_revision+1 WHERE feed_id=$1`,
       [claim.feedId, claim.targetSize, claim.targetHash])
   })
   return verified
@@ -576,7 +602,7 @@ export async function quarantineObserverTarget(store: ObserverStore, claim: Obse
     await client.query(
       `UPDATE observer_cursors SET staged_next_index=accepted_size, active_attempt_id=NULL,
          staged_checkpoint_tail_hash=NULL, staged_checkpoint_tail_position=NULL,
-         version=version+1 WHERE feed_id=$1`, [claim.feedId])
+         version=version+1, report_revision=report_revision+1 WHERE feed_id=$1`, [claim.feedId])
     return safeCount(finding.rows[0]?.finding_id)
   })
 }
@@ -608,7 +634,103 @@ export async function recordObserverFinding(store: ObserverStore, claim: Observe
       `INSERT INTO observer_findings(feed_id, attempt_id, finding_type, evidence_bytes)
        VALUES($1,$2,$3,$4) RETURNING finding_id`,
       [claim.feedId, cursor.active_attempt_id, findingType, evidence])
-    await client.query('UPDATE observer_cursors SET version=version+1 WHERE feed_id=$1', [claim.feedId])
+    await client.query('UPDATE observer_cursors SET version=version+1, report_revision=report_revision+1 WHERE feed_id=$1',
+      [claim.feedId])
     return safeCount(inserted.rows[0]?.finding_id)
+  })
+}
+
+/** Replays the accepted prefix from customer-owned bytes and retains one signed report per evidence revision. */
+export async function publishObserverCoverage(store: ObserverStore, feedId: string,
+  signer: CryptoKeyPair): Promise<SignedObserverReport | null> {
+  if (typeof feedId !== 'string' || !HASH.test(feedId)) throw new TypeError('Invalid observer feed ID')
+  const observerKeyId = await signingKeyId(signer.publicKey)
+  const material = await transaction(store, async client => {
+    const feed = await client.query<{ anchor_pin: string; signed_anchor: Buffer }>(
+      'SELECT anchor_pin, signed_anchor FROM observer_feeds WHERE feed_id=$1', [feedId])
+    const cursor = await client.query<{ accepted_size: string; accepted_checkpoint_hash: string | null;
+      report_revision: string }>(
+      'SELECT accepted_size, accepted_checkpoint_hash, report_revision FROM observer_cursors WHERE feed_id=$1', [feedId])
+    if (feed.rows.length !== 1 || cursor.rows.length !== 1) throw new TypeError('Unknown observer feed')
+    const state = cursor.rows[0]!
+    if (state.accepted_checkpoint_hash === null) return null
+    const revision = safeCount(state.report_revision)
+    const prior = await client.query<{ signed_report: Buffer }>(
+      `SELECT signed_report FROM observer_reports
+       WHERE feed_id=$1 AND report_revision=$2 AND observer_key_id=$3`, [feedId, revision, observerKeyId])
+    if (prior.rows[0]) return { existing: new Uint8Array(prior.rows[0].signed_report),
+      pin: feed.rows[0]!.anchor_pin }
+    const leaves = await client.query<{ leaf_index: string; leaf_bytes: Buffer }>(
+      'SELECT leaf_index, leaf_bytes FROM observer_leaves WHERE feed_id=$1 ORDER BY leaf_index', [feedId])
+    const checkpoints = await client.query<{ position: string; statement_hash: string; signed_checkpoint: Buffer }>(
+      'SELECT position, statement_hash, signed_checkpoint FROM observer_checkpoints WHERE feed_id=$1 ORDER BY position',
+      [feedId])
+    const findings = await client.query<{ evidence_bytes: Buffer }>(
+      `SELECT evidence_bytes FROM observer_findings
+       WHERE feed_id=$1 AND resolved_at IS NULL ORDER BY finding_id LIMIT 10001`, [feedId])
+    const size = safeCount(state.accepted_size)
+    if (leaves.rows.length !== size || leaves.rows.some((row, index) => safeCount(row.leaf_index) !== index)
+      || checkpoints.rows.length === 0 || checkpoints.rows.length > 10_001
+      || checkpoints.rows.some((row, index) => safeCount(row.position) !== index)
+      || checkpoints.rows.at(-1)!.statement_hash !== state.accepted_checkpoint_hash
+      || findings.rows.length > 10_000) throw new TypeError('Incomplete observer report evidence')
+    let bytes = feed.rows[0]!.signed_anchor.length
+    for (const row of leaves.rows) bytes += row.leaf_bytes.length
+    for (const row of checkpoints.rows) bytes += row.signed_checkpoint.length
+    for (const row of findings.rows) bytes += row.evidence_bytes.length
+    if (bytes > 32 * 1024 * 1024) throw new RangeError('Observer report replay budget exceeded')
+    return { existing: null, pin: feed.rows[0]!.anchor_pin, revision,
+      checkpointHash: state.accepted_checkpoint_hash,
+      anchor: parseCanonical(feed.rows[0]!.signed_anchor) as unknown as SignedAuthorityAnchor,
+      leaves: leaves.rows.map(row => new Uint8Array(row.leaf_bytes)),
+      checkpoints: checkpoints.rows.map(row => parseCanonical(row.signed_checkpoint) as unknown as SignedCheckpoint),
+      findings: findings.rows.map(row => new Uint8Array(row.evidence_bytes)) }
+  })
+  if (material === null) return null
+  if (material.existing) {
+    const previous = parseCanonical(material.existing) as unknown as SignedObserverReport
+    if (!await verifyObserverReport(previous, signer.publicKey, { feedId, anchorPin: material.pin })) {
+      throw new TypeError('Stored observer report failed verification')
+    }
+    return previous
+  }
+  const snapshot = await replayGovernanceHistory(material.anchor, material.pin,
+    material.leaves, material.checkpoints)
+  if (snapshot.feedId !== feedId || snapshot.checkpointHash !== material.checkpointHash) {
+    throw new TypeError('Observer report replay disagrees with retained cursor')
+  }
+  const findingHashes = [...new Set(await Promise.all(material.findings.map(observerFindingHash)))].sort()
+  const report = await signObserverReport(snapshot, material.checkpoints.at(-1)!, {
+    anchorPin: material.pin, checkedAt: new Date().toISOString(),
+    knownReceipts: { kind: 'none', count: 0, digest: null },
+    unresolvedFindings: { count: findingHashes.length,
+      digest: findingHashes.length ? await observerEvidenceSetDigest(findingHashes) : null }
+  }, signer)
+  const bytes = Buffer.from(canonicalBytes(report))
+  if (bytes.length > 16_384) throw new RangeError('Observer report exceeds storage limit')
+  const reportHash = createHash('sha256').update(bytes).digest('hex')
+  return transaction(store, async client => {
+    const current = await client.query<{ report_revision: string; accepted_checkpoint_hash: string | null }>(
+      'SELECT report_revision, accepted_checkpoint_hash FROM observer_cursors WHERE feed_id=$1 FOR UPDATE', [feedId])
+    if (current.rows.length !== 1 || safeCount(current.rows[0]!.report_revision) !== material.revision
+      || current.rows[0]!.accepted_checkpoint_hash !== material.checkpointHash) {
+      throw new TypeError('Observer evidence changed during report signing')
+    }
+    const inserted = await client.query(
+      `INSERT INTO observer_reports(report_hash, feed_id, covered_checkpoint_hash, observer_key_id,
+         report_revision, signed_report) VALUES($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (feed_id, report_revision, observer_key_id) DO NOTHING`,
+      [reportHash, feedId, material.checkpointHash, observerKeyId, material.revision, bytes])
+    if (inserted.rowCount === 1) return report
+    const prior = await client.query<{ signed_report: Buffer }>(
+      `SELECT signed_report FROM observer_reports
+       WHERE feed_id=$1 AND report_revision=$2 AND observer_key_id=$3`,
+      [feedId, material.revision, observerKeyId])
+    if (prior.rows.length !== 1) throw new TypeError('Concurrent observer report is missing')
+    const existing = parseCanonical(prior.rows[0]!.signed_report) as unknown as SignedObserverReport
+    if (!await verifyObserverReport(existing, signer.publicKey, { feedId, anchorPin: material.pin })) {
+      throw new TypeError('Concurrent observer report failed verification')
+    }
+    return existing
   })
 }
