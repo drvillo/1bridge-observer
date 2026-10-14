@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { gzipSync } from 'node:zlib'
 import { canonicalBytes, checkpointHash, encodeBase64Url, generateSigningKey, signCheckpoint, signingKeyId } from '@drvillo/1bridge-authority'
-import { discoverFeedHead, fetchCheckpointPage, fetchLeafPage, SourceHttpError } from '../src/lib/source'
+import {
+  discoverFeedHead, fetchCheckpointPage, fetchLeafPage,
+  SourceHttpError, SourceProtocolError, SourceTransportError,
+} from '../src/lib/source'
 import type { ObserverConfig } from '../src/lib/config'
 import { startSourceFixture, type SourceFixture } from './source-fixture'
 
@@ -134,6 +137,7 @@ describe('fixed-target source pull', () => {
     const target = await discoverFeedHead(config)
     fixture.override = () => ({ bytes: new Uint8Array(256 * 1024 + 1).fill(65) })
     await expect(fetchLeafPage(config, target.checkpointHash, 0, 2, 1)).rejects.toThrow(/limit/i)
+    await expect(fetchLeafPage(config, target.checkpointHash, 0, 2, 1)).rejects.toBeInstanceOf(SourceProtocolError)
     fixture.override = () => ({ bytes: gzipSync(new Uint8Array(64 * 1024 + 1).fill(65)), headers: { 'content-encoding': 'gzip' } })
     await expect(fetchCheckpointPage(config, target.checkpointHash, 'start', 1)).rejects.toThrow(/limit/i)
   })
@@ -146,6 +150,7 @@ describe('fixed-target source pull', () => {
     await expect(discoverFeedHead(config)).rejects.toMatchObject({ status: 500 })
     fixture.override = () => ({ delayMs: 100, bytes: new Uint8Array() })
     await expect(discoverFeedHead(config, { timeoutMs: 5 })).rejects.toThrow(/timed out/i)
+    await expect(discoverFeedHead(config, { timeoutMs: 5 })).rejects.toBeInstanceOf(SourceTransportError)
   })
 
   it('exposes HTTP status without response bodies and rejects unsafe requests', async () => {
@@ -154,5 +159,19 @@ describe('fixed-target source pull', () => {
     await expect(fetchCheckpointPage(config, 'bad', 'start', 1)).rejects.toThrow(/request/)
     await expect(fetchLeafPage(config, 'a'.repeat(64), 3, 2, 1)).rejects.toThrow(/request/)
     await expect(discoverFeedHead({ ...config, sourceBaseUrl: 'http://evil.example' })).rejects.toThrow(/protocol/)
+  })
+
+  it('classifies malformed successful responses as protocol nonconformance', async () => {
+    fixture.override = () => ({ bytes: new TextEncoder().encode('{"version":1,"version":1}') })
+    await expect(discoverFeedHead(config)).rejects.toBeInstanceOf(SourceProtocolError)
+    const target = await checkpointHash(fixture.signedCheckpoints[2]!.statement)
+    alteredBody({ version: 1, target, start: 0, items: [] })
+    await expect(fetchLeafPage(config, target, 0, 2, 1)).rejects.toBeInstanceOf(SourceProtocolError)
+  })
+
+  it('classifies a failed connection as transport unavailability', async () => {
+    await fixture.close()
+    fixture.close = async () => undefined
+    await expect(discoverFeedHead(config)).rejects.toBeInstanceOf(SourceTransportError)
   })
 })

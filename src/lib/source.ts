@@ -31,6 +31,9 @@ export class SourceHttpError extends Error {
   constructor(readonly status: number) { super(`Source HTTP ${status}`) }
 }
 
+export class SourceProtocolError extends Error {}
+export class SourceTransportError extends Error {}
+
 function record(value: unknown, fields: string[]): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Invalid source envelope')
   const keys = Object.keys(value)
@@ -59,18 +62,19 @@ function requestUrl(config: ObserverConfig, route: string, params?: Record<strin
 }
 
 async function readBoundedResponse(response: Response, maxBytes: number): Promise<Uint8Array> {
-  if (!response.body) throw new TypeError('Empty source response')
+  if (!response.body) throw new SourceProtocolError('Empty source response')
   const reader = response.body.getReader()
   const chunks: Uint8Array[] = []
   let size = 0
   try {
     while (true) {
-      const next = await reader.read()
+      let next: ReadableStreamReadResult<Uint8Array>
+      try { next = await reader.read() } catch { throw new SourceTransportError('Source response interrupted') }
       if (next.done) break
       size += next.value.byteLength
       if (size > maxBytes) {
         await reader.cancel().catch(() => undefined)
-        throw new RangeError('Decoded source response exceeds byte limit')
+        throw new SourceProtocolError('Decoded source response exceeds byte limit')
       }
       chunks.push(next.value)
     }
@@ -87,23 +91,33 @@ async function getEnvelope(config: ObserverConfig, route: string, maxBytes: numb
   params?: Record<string, string>, options: SourceRequestOptions = {}): Promise<unknown> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new TypeError('Invalid source timeout')
+  const url = requestUrl(config, route, params)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const response = await fetch(requestUrl(config, route, params), {
-      method: 'GET', redirect: 'error', cache: 'no-store', signal: controller.signal,
-      headers: { accept: 'application/json' },
-    })
+    let response: Response
+    try {
+      response = await fetch(url, {
+        method: 'GET', redirect: 'error', cache: 'no-store', signal: controller.signal,
+        headers: { accept: 'application/json' },
+      })
+    } catch {
+      throw new SourceTransportError(controller.signal.aborted ? 'Source request timed out' : 'Source transport unavailable')
+    }
     if (!response.ok) throw new SourceHttpError(response.status)
-    return parseCanonical(await readBoundedResponse(response, maxBytes))
-  } catch (error) {
-    if (controller.signal.aborted) throw new Error('Source request timed out')
-    if (error instanceof Error && (error instanceof SourceHttpError || error.message.includes('byte limit')
-      || error.message.startsWith('Expected exact canonical') || error.message.startsWith('Invalid source'))) throw error
-    throw new Error('Source request failed or returned invalid canonical data')
+    let bytes: Uint8Array
+    try { bytes = await readBoundedResponse(response, maxBytes) } catch (error) {
+      if (controller.signal.aborted) throw new SourceTransportError('Source request timed out')
+      throw error
+    }
+    try { return parseCanonical(bytes) } catch { throw new SourceProtocolError('Invalid canonical source response') }
   } finally {
     clearTimeout(timer)
   }
+}
+
+async function parseSourceData<T>(parser: () => Promise<T>): Promise<T> {
+  try { return await parser() } catch { throw new SourceProtocolError('Source response violates protocol') }
 }
 
 function decoded(value: unknown, limit: number): Uint8Array {
@@ -132,17 +146,20 @@ function items(value: unknown, maxItems: number): unknown[] {
 
 export async function discoverFeedHead(config: ObserverConfig, options?: SourceRequestOptions): Promise<ProvisionalFeedHead> {
   await verifyObserverAnchor(config)
-  const envelope = record(await getEnvelope(config, 'head', HEAD_LIMIT, undefined, options),
-    ['version', 'signedAnchor', 'signedCheckpoint', 'checkpointHash'])
-  if (envelope.version !== 1 || !hash(envelope.checkpointHash)) throw new TypeError('Invalid source head')
-  const signedAnchor = parseCanonical(decoded(envelope.signedAnchor, 16_384))
-  const anchorState = await verifyAuthorityAnchor(signedAnchor as unknown as Parameters<typeof verifyAuthorityAnchor>[0], config.anchorPin)
-  if (authorityStateSnapshot(anchorState).feedId !== config.feedId) throw new TypeError('Source anchor feed mismatch')
-  const item = await checkpointItem(envelope.signedCheckpoint)
-  if (item.signed.statement.feedId !== config.feedId || item.hash !== envelope.checkpointHash) {
-    throw new TypeError('Source head hash or feed mismatch')
-  }
-  return { provisional: true, checkpointHash: item.hash, signedCheckpoint: item.signed, signedCheckpointBytes: item.bytes }
+  const data = await getEnvelope(config, 'head', HEAD_LIMIT, undefined, options)
+  return parseSourceData(async () => {
+    const envelope = record(data,
+      ['version', 'signedAnchor', 'signedCheckpoint', 'checkpointHash'])
+    if (envelope.version !== 1 || !hash(envelope.checkpointHash)) throw new TypeError('Invalid source head')
+    const signedAnchor = parseCanonical(decoded(envelope.signedAnchor, 16_384))
+    const anchorState = await verifyAuthorityAnchor(signedAnchor as unknown as Parameters<typeof verifyAuthorityAnchor>[0], config.anchorPin)
+    if (authorityStateSnapshot(anchorState).feedId !== config.feedId) throw new TypeError('Source anchor feed mismatch')
+    const item = await checkpointItem(envelope.signedCheckpoint)
+    if (item.signed.statement.feedId !== config.feedId || item.hash !== envelope.checkpointHash) {
+      throw new TypeError('Source head hash or feed mismatch')
+    }
+    return { provisional: true, checkpointHash: item.hash, signedCheckpoint: item.signed, signedCheckpointBytes: item.bytes }
+  })
 }
 
 export async function fetchCheckpointPage(config: ObserverConfig, target: string, after: string,
@@ -150,51 +167,57 @@ export async function fetchCheckpointPage(config: ObserverConfig, target: string
   if (!hash(target) || (after !== 'start' && !hash(after)) || !count(limit) || limit < 1 || limit > 16) {
     throw new TypeError('Invalid checkpoint page request')
   }
-  const envelope = record(await getEnvelope(config, 'checkpoints', CHECKPOINT_LIMIT,
-    { after, target, limit: String(limit) }, options), ['version', 'target', 'after', 'items'])
-  if (envelope.version !== 1 || envelope.target !== target || envelope.after !== after) {
-    throw new TypeError('Source checkpoint page echo mismatch')
-  }
-  const encoded = items(envelope.items, limit)
-  if (encoded.length === 0 && after !== target) throw new TypeError('Empty nonterminal checkpoint page')
-  if (encoded.length > 0 && after === target) throw new TypeError('Checkpoint page beyond target')
-  const result: CheckpointPageItem[] = []
-  let predecessor: string | null = after === 'start' ? null : after
-  let decodedBytes = 0
-  for (const value of encoded) {
-    const item = await checkpointItem(value)
-    decodedBytes += item.bytes.byteLength
-    if (decodedBytes > CHECKPOINT_LIMIT) throw new RangeError('Decoded checkpoint items exceed byte limit')
-    if (item.signed.statement.feedId !== config.feedId || item.signed.statement.previous !== predecessor) {
-      throw new TypeError('Checkpoint page skips predecessor or feed')
+  const data = await getEnvelope(config, 'checkpoints', CHECKPOINT_LIMIT,
+    { after, target, limit: String(limit) }, options)
+  return parseSourceData(async () => {
+    const envelope = record(data, ['version', 'target', 'after', 'items'])
+    if (envelope.version !== 1 || envelope.target !== target || envelope.after !== after) {
+      throw new TypeError('Source checkpoint page echo mismatch')
     }
-    if (predecessor === null && item.signed.statement.size !== 0) throw new TypeError('Checkpoint page lacks genesis')
-    if (item.hash === target && result.length !== encoded.length - 1) throw new TypeError('Checkpoint page extends target')
-    predecessor = item.hash
-    result.push(item)
-  }
-  return { items: result }
+    const encoded = items(envelope.items, limit)
+    if (encoded.length === 0 && after !== target) throw new TypeError('Empty nonterminal checkpoint page')
+    if (encoded.length > 0 && after === target) throw new TypeError('Checkpoint page beyond target')
+    const result: CheckpointPageItem[] = []
+    let predecessor: string | null = after === 'start' ? null : after
+    let decodedBytes = 0
+    for (const value of encoded) {
+      const item = await checkpointItem(value)
+      decodedBytes += item.bytes.byteLength
+      if (decodedBytes > CHECKPOINT_LIMIT) throw new RangeError('Decoded checkpoint items exceed byte limit')
+      if (item.signed.statement.feedId !== config.feedId || item.signed.statement.previous !== predecessor) {
+        throw new TypeError('Checkpoint page skips predecessor or feed')
+      }
+      if (predecessor === null && item.signed.statement.size !== 0) throw new TypeError('Checkpoint page lacks genesis')
+      if (item.hash === target && result.length !== encoded.length - 1) throw new TypeError('Checkpoint page extends target')
+      predecessor = item.hash
+      result.push(item)
+    }
+    return { items: result }
+  })
 }
 
 export async function fetchLeafPage(config: ObserverConfig, target: string, start: number,
   targetSize: number, limit: number, options?: SourceRequestOptions): Promise<{ items: Uint8Array[] }> {
   if (!hash(target) || !count(start) || !count(targetSize) || start > targetSize ||
     !count(limit) || limit < 1 || limit > 64) throw new TypeError('Invalid leaf page request')
-  const envelope = record(await getEnvelope(config, 'leaves', LEAF_LIMIT,
-    { start: String(start), target, limit: String(limit) }, options), ['version', 'target', 'start', 'items'])
-  if (envelope.version !== 1 || envelope.target !== target || envelope.start !== start) {
-    throw new TypeError('Source leaf page echo mismatch')
-  }
-  const encoded = items(envelope.items, limit)
-  if (encoded.length === 0 && start !== targetSize) throw new TypeError('Empty nonterminal leaf page')
-  if (encoded.length > targetSize - start) throw new TypeError('Leaf page extends target')
-  const result: Uint8Array[] = []
-  let decodedBytes = 0
-  for (const value of encoded) {
-    const bytes = decoded(value, LEAF_LIMIT)
-    decodedBytes += bytes.byteLength
-    if (decodedBytes > LEAF_LIMIT) throw new RangeError('Decoded leaf items exceed byte limit')
-    result.push(bytes)
-  }
-  return { items: result }
+  const data = await getEnvelope(config, 'leaves', LEAF_LIMIT,
+    { start: String(start), target, limit: String(limit) }, options)
+  return parseSourceData(async () => {
+    const envelope = record(data, ['version', 'target', 'start', 'items'])
+    if (envelope.version !== 1 || envelope.target !== target || envelope.start !== start) {
+      throw new TypeError('Source leaf page echo mismatch')
+    }
+    const encoded = items(envelope.items, limit)
+    if (encoded.length === 0 && start !== targetSize) throw new TypeError('Empty nonterminal leaf page')
+    if (encoded.length > targetSize - start) throw new TypeError('Leaf page extends target')
+    const result: Uint8Array[] = []
+    let decodedBytes = 0
+    for (const value of encoded) {
+      const bytes = decoded(value, LEAF_LIMIT)
+      decodedBytes += bytes.byteLength
+      if (decodedBytes > LEAF_LIMIT) throw new RangeError('Decoded leaf items exceed byte limit')
+      result.push(bytes)
+    }
+    return { items: result }
+  })
 }
