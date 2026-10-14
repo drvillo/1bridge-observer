@@ -50,6 +50,15 @@ test "$actual" = 9
 actual=$(printf "SELECT version || ':' || length(schema_digest) FROM observer_schema_versions;" | sql)
 test "$actual" = '1:64'
 
+# A same-name replacement index must not conceal a changed uniqueness rule.
+printf 'CREATE DATABASE index_drift;\n' | sql >/dev/null
+install_schema index_drift >/dev/null
+printf 'DROP INDEX observer_targets_one_active_idx; CREATE INDEX observer_targets_one_active_idx ON observer_targets(feed_id);\n' | sql index_drift >/dev/null
+if install_schema index_drift >/dev/null 2>&1; then
+  echo 'Expected changed active-target index to block repeated installation' >&2
+  exit 1
+fi
+
 # A public marker must not be mistaken for a fresh customer-selected schema.
 printf 'CREATE SCHEMA observer_tenant;\n' | sql >/dev/null
 install_schema postgres observer_tenant >/dev/null

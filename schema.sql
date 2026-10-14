@@ -44,6 +44,26 @@ BEGIN
     IF table_count <> 9 THEN
       RAISE EXCEPTION 'Incomplete observer schema';
     END IF;
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_class AS index_object
+      JOIN pg_namespace AS namespace ON namespace.oid = index_object.relnamespace
+      JOIN pg_index AS index_entry ON index_entry.indexrelid = index_object.oid
+      JOIN pg_class AS indexed_table ON indexed_table.oid = index_entry.indrelid
+      JOIN pg_attribute AS feed_column
+        ON feed_column.attrelid = indexed_table.oid AND feed_column.attname = 'feed_id'
+      JOIN pg_am AS access_method ON access_method.oid = index_object.relam
+      WHERE namespace.nspname = current_schema()
+        AND index_object.relname = 'observer_targets_one_active_idx'
+        AND indexed_table.relname = 'observer_targets'
+        AND access_method.amname = 'btree'
+        AND index_entry.indisunique
+        AND index_entry.indnkeyatts = 1
+        AND index_entry.indkey[0] = feed_column.attnum
+        AND pg_get_expr(index_entry.indpred, index_entry.indrelid) = '(status = ''active''::text)'
+    ) THEN
+      RAISE EXCEPTION 'Observer active-target index has changed';
+    END IF;
   END IF;
 END;
 $observer_install$;
