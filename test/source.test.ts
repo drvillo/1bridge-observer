@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { gzipSync } from 'node:zlib'
 import { canonicalBytes, checkpointHash, encodeBase64Url, generateSigningKey, signCheckpoint, signingKeyId } from '@drvillo/1bridge-authority'
 import {
@@ -19,7 +19,7 @@ beforeEach(async () => {
     databaseUrl: 'postgres://db.example/observer', cronSecret: 'x'.repeat(32),
   }
 })
-afterEach(async () => { await fixture.close() })
+afterEach(async () => { vi.unstubAllGlobals(); await fixture.close() })
 
 function body(value: unknown): Uint8Array { return canonicalBytes(value) }
 function alteredBody(value: unknown) { fixture.override = () => ({ bytes: body(value) }) }
@@ -173,5 +173,18 @@ describe('fixed-target source pull', () => {
     await fixture.close()
     fixture.close = async () => undefined
     await expect(discoverFeedHead(config)).rejects.toBeInstanceOf(SourceTransportError)
+  })
+
+  it('cancels an unbounded HTTP error body without draining it', async () => {
+    let cancellations = 0
+    let pulls = 0
+    const stream = new ReadableStream<Uint8Array>({
+      pull() { pulls += 1; return new Promise<void>(() => undefined) },
+      cancel() { cancellations += 1 },
+    })
+    vi.stubGlobal('fetch', async () => new Response(stream, { status: 403 }))
+    await expect(discoverFeedHead(config)).rejects.toMatchObject({ status: 403 })
+    expect(cancellations).toBe(1)
+    expect(pulls).toBeLessThanOrEqual(1)
   })
 })

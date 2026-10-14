@@ -104,7 +104,10 @@ async function getEnvelope(config: ObserverConfig, route: string, maxBytes: numb
     } catch {
       throw new SourceTransportError(controller.signal.aborted ? 'Source request timed out' : 'Source transport unavailable')
     }
-    if (!response.ok) throw new SourceHttpError(response.status)
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => undefined)
+      throw new SourceHttpError(response.status)
+    }
     let bytes: Uint8Array
     try { bytes = await readBoundedResponse(response, maxBytes) } catch (error) {
       if (controller.signal.aborted) throw new SourceTransportError('Source request timed out')
