@@ -1,6 +1,6 @@
 # 1bridge independent observer
 
-Public, customer-operated pull observer for 1bridge governance evidence. This repository has a bounded pull client, process-local fixed-target verification, a test-only HTTP governance source, a durable Postgres store, and a bounded poll core that resumes staged evidence after an outage. It does not yet expose a scheduled or manual poll route or produce signed audit coverage. A running health endpoint is not an audit assurance.
+Public, customer-operated pull observer for 1bridge governance evidence. This repository has a bounded pull client, process-local fixed-target verification, a test-only HTTP governance source, a durable Postgres store, and a bounded poll core that resumes staged evidence after an outage. A malformed source response creates a durable nonconformance finding; an outage does not create a cryptographic accusation. The repository does not yet expose a scheduled or manual poll route or produce signed audit coverage. A running health endpoint is not an audit assurance.
 
 ## Run locally
 

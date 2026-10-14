@@ -1,9 +1,9 @@
-import type { GovernanceReplaySnapshot } from '@drvillo/1bridge-authority'
+import { canonicalBytes, encodeBase64Url, type GovernanceReplaySnapshot } from '@drvillo/1bridge-authority'
 import type { ObserverConfig } from './config'
 import { discoverFeedHead, fetchCheckpointPage, fetchLeafPage,
   SourceHttpError, SourceProtocolError, SourceTransportError } from './source'
 import { acceptObserverTarget, beginObserverTarget, claimObserverLease,
-  quarantineObserverTarget, readObserverProgress, registerObserverFeed, stageObserverBatch,
+  quarantineObserverTarget, readObserverProgress, recordObserverFinding, registerObserverFeed, stageObserverBatch,
   type ObserverStore } from './store'
 
 export interface PollBudget {
@@ -13,7 +13,7 @@ export interface PollBudget {
 }
 
 export type PollResult =
-  | { status: 'busy' | 'pending' | 'unavailable' | 'up_to_date' }
+  | { status: 'busy' | 'pending' | 'unavailable' | 'up_to_date' | 'source_nonconforming' }
   | { status: 'accepted'; snapshot: GovernanceReplaySnapshot }
   | { status: 'quarantined'; findingId: number }
 
@@ -93,6 +93,14 @@ export async function pollObserverOnce(store: ObserverStore, config: ObserverCon
     }
   } catch (error) {
     if (error instanceof SourceHttpError || error instanceof SourceTransportError) return { status: 'unavailable' }
+    if (error instanceof SourceProtocolError) {
+      const evidence = canonicalBytes({ version: 1, kind: 'observer.source_nonconformance',
+        feedId: config.feedId, targetHash: target?.checkpointHash ?? null,
+        signedTarget: target ? encodeBase64Url(target.signedCheckpointBytes) : null,
+        after, stagedNextIndex: stagedNext, reason: error.message })
+      await recordObserverFinding(store, claim ?? lease, 'source_nonconformance', evidence)
+      return { status: 'source_nonconforming' }
+    }
     throw error
   }
 }

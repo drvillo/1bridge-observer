@@ -568,3 +568,35 @@ export async function quarantineObserverTarget(store: ObserverStore, claim: Obse
     return safeCount(finding.rows[0]?.finding_id)
   })
 }
+
+/** Retains an observer diagnostic under the current lease without changing accepted coverage. */
+export async function recordObserverFinding(store: ObserverStore, claim: ObserverLease,
+  findingType: 'source_nonconformance', evidenceBytes: Uint8Array): Promise<number> {
+  if (findingType !== 'source_nonconformance' || !(evidenceBytes instanceof Uint8Array)
+    || evidenceBytes.length === 0 || evidenceBytes.length > 16_384) {
+    throw new TypeError('Invalid observer finding')
+  }
+  const evidence = Buffer.from(evidenceBytes)
+  if (!equalBytes(canonicalBytes(parseCanonical(evidence)), evidence)) {
+    throw new TypeError('Observer finding must be canonical')
+  }
+  return transaction(store, async client => {
+    const cursor = await lockClaim(client, claim)
+    const existing = await client.query<{ finding_id: string }>(
+      `SELECT finding_id FROM observer_findings
+       WHERE feed_id=$1 AND finding_type=$2 AND evidence_bytes=$3 AND resolved_at IS NULL LIMIT 1`,
+      [claim.feedId, findingType, evidence])
+    if (existing.rows[0]) {
+      await client.query('UPDATE observer_findings SET last_seen_at=clock_timestamp() WHERE finding_id=$1',
+        [existing.rows[0].finding_id])
+      return safeCount(existing.rows[0].finding_id)
+    }
+    if (safeCount(cursor.version) === Number.MAX_SAFE_INTEGER) throw new RangeError('Observer cursor version exhausted')
+    const inserted = await client.query<{ finding_id: string }>(
+      `INSERT INTO observer_findings(feed_id, attempt_id, finding_type, evidence_bytes)
+       VALUES($1,$2,$3,$4) RETURNING finding_id`,
+      [claim.feedId, cursor.active_attempt_id, findingType, evidence])
+    await client.query('UPDATE observer_cursors SET version=version+1 WHERE feed_id=$1', [claim.feedId])
+    return safeCount(inserted.rows[0]?.finding_id)
+  })
+}

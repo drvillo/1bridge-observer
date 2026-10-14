@@ -25,7 +25,7 @@ trap cleanup EXIT
 docker exec "$container" createdb -U postgres "$database"
 created=true
 docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d "$database" \
-  -c 'CREATE SCHEMA observer_test; CREATE SCHEMA observer_parallel; CREATE SCHEMA observer_poll; CREATE SCHEMA observer_poll_unavailable; CREATE SCHEMA observer_poll_invalid' >/dev/null
+  -c 'CREATE SCHEMA observer_test; CREATE SCHEMA observer_parallel; CREATE SCHEMA observer_poll; CREATE SCHEMA observer_poll_unavailable; CREATE SCHEMA observer_poll_invalid; CREATE SCHEMA observer_poll_protocol' >/dev/null
 export OBSERVER_TEST_DATABASE_NAME="$database"
 export OBSERVER_SUPABASE_DATABASE_URL="$source_url"
 OBSERVER_TEST_DATABASE_URL=$(node -e '

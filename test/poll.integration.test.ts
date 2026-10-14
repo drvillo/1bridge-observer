@@ -71,6 +71,8 @@ describe('durable bounded source poll', () => {
         'SELECT active_attempt_id, accepted_size FROM observer_poll_unavailable.observer_cursors')
       expect(prior.rows[0].active_attempt_id).not.toBeNull()
       expect(prior.rows[0].accepted_size).toBe('0')
+      expect((await inspector.query('SELECT count(*) AS total FROM observer_poll_unavailable.observer_findings')).rows[0].total)
+        .toBe('0')
       faults.unavailableLeaves = false
       const resumed = await pollObserverOnce(store, settings, 'poll-worker',
         { maxLeafPages: 16, maxCheckpoints: 16, maxMs: 20_000 })
@@ -94,6 +96,43 @@ describe('durable bounded source poll', () => {
       expect(cursor.rows).toEqual([{ accepted_size: '0', active_attempt_id: null }])
       expect((await inspector.query('SELECT finding_type FROM observer_poll_invalid.observer_findings')).rows)
         .toEqual([{ finding_type: 'invalid_replay' }])
+    } finally { await store.close(); await source.close() }
+  })
+
+  it('retains source nonconformance without treating it as a cryptographic finding', async () => {
+    const history = await buildGovernanceSource()
+    const faults: GovernanceSourceFaults = { omitGenesis: true }
+    const source = await startGovernanceSource(history, undefined, undefined, faults)
+    const store = openObserverStore(databaseUrl, 'observer_poll_protocol')
+    try {
+      await installObserverSchema(store)
+      const settings = config(history, source.baseUrl)
+      const first = await pollObserverOnce(store, settings, 'poll-worker',
+        { maxLeafPages: 16, maxCheckpoints: 16, maxMs: 20_000 })
+      expect(first).toMatchObject({ status: 'source_nonconforming' })
+      const cursor = await inspector.query(
+        'SELECT accepted_size, active_attempt_id, version FROM observer_poll_protocol.observer_cursors')
+      expect(cursor.rows[0].accepted_size).toBe('0')
+      expect(cursor.rows[0].active_attempt_id).not.toBeNull()
+      const findings = await inspector.query(
+        'SELECT finding_type, evidence_bytes, resolved_at FROM observer_poll_protocol.observer_findings')
+      expect(findings.rows).toHaveLength(1)
+      expect(findings.rows[0].finding_type).toBe('source_nonconformance')
+      expect(findings.rows[0].resolved_at).toBeNull()
+      expect(authority.parseCanonical(findings.rows[0].evidence_bytes)).toMatchObject({
+        kind: 'observer.source_nonconformance', feedId: settings.feedId,
+      })
+      const second = await pollObserverOnce(store, settings, 'poll-worker',
+        { maxLeafPages: 16, maxCheckpoints: 16, maxMs: 20_000 })
+      expect(second).toMatchObject({ status: 'source_nonconforming' })
+      expect((await inspector.query('SELECT count(*) AS total FROM observer_poll_protocol.observer_findings')).rows[0].total)
+        .toBe('1')
+      faults.omitGenesis = false
+      const caughtUp = await pollObserverOnce(store, settings, 'poll-worker',
+        { maxLeafPages: 16, maxCheckpoints: 16, maxMs: 20_000 })
+      expect(caughtUp).toMatchObject({ status: 'accepted', snapshot: { size: 7 } })
+      expect((await inspector.query('SELECT resolved_at FROM observer_poll_protocol.observer_findings')).rows[0].resolved_at)
+        .toBeNull()
     } finally { await store.close(); await source.close() }
   })
 })

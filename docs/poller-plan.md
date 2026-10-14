@@ -29,7 +29,7 @@ Status: poll core implemented and under verification, 2026-10-14. The applicatio
 | `test/poll.integration.test.ts` | Prove offline resume, honest catch-up, invalid candidate and no-op on real Postgres | Lowest layer that sees HTTP and durable DB |
 | `test/store.integration.test.sh`, `test/store.supabase.test.sh` | Give poll tests a distinct disposable schema | No application table touched |
 
-The poller uses checkpoint pages of one item each. It fetches and stages leaf pages through that checkpoint's size, then stages the checkpoint. If a budget ends midway, the staged leaf cursor survives and the next run refetches the still-unstaged checkpoint. It never holds a database transaction over HTTP or cryptographic replay. The fixed target's signature bytes are compared when its checkpoint arrives. Each invocation has page-count and elapsed-time bounds; the lease is checked again on each store mutation. A transport failure returns a pending/unavailable result; structurally invalid source data is surfaced as an error until a durable source-protocol finding contract exists.
+The poller uses checkpoint pages of one item each. It fetches and stages leaf pages through that checkpoint's size, then stages the checkpoint. If a budget ends midway, the staged leaf cursor survives and the next run refetches the still-unstaged checkpoint. It never holds a database transaction over HTTP or cryptographic replay. The fixed target's signature bytes are compared when its checkpoint arrives. Each invocation has page-count and elapsed-time bounds; the lease is checked again on each store mutation. A transport failure returns unavailable without a finding. A structurally invalid source response retains a deduplicated nonconformance diagnostic with target/cursor context; this is not a cryptographic proof of suppression because the raw response is not independently retained.
 
 ## Test plan
 
@@ -40,6 +40,7 @@ The poller uses checkpoint pages of one item each. It fetches and stages leaf pa
 | Source leaf outage | HTTP + real Postgres | Returns unavailable, keeps active target and accepted head unchanged |
 | Signed but invalid candidate | HTTP + real Postgres | Exact attempt/finding retained; accepted size unchanged |
 | Same accepted head | HTTP + real Postgres | No duplicate target or version advance |
+| Malformed success response | HTTP + real Postgres | Durable nonconformance finding, idempotent repeat, accepted coverage unchanged |
 
 ## Principles and verification
 
