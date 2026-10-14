@@ -1,11 +1,11 @@
 # Bounded pull client and fixture publisher plan
 
-> Planned observer increment. The frozen source wire contract is `docs/source-pull-contract.md`. This increment fetches and parses a fixed target; it does not persist evidence, report coverage or assume a customer-approved feed-read credential scheme.
+> Implementation record for the bounded pull increment. The source wire contract is `docs/source-pull-contract.md`. The client fetches and parses a fixed provisional target, and a local HTTP fixture replays a real seven-leaf governance history. This increment does not persist evidence, report coverage or assume a customer-approved feed-read credential scheme.
 
 ## Ground truth
 
-- The repository currently has `src/lib/config.ts` for source URL, feed ID, independent pin/anchor, database URL and cron secret. `verifyObserverAnchor` calls the authority library to verify the pinned anchor and initial provider key. There is no source client, fixture publisher or poll route.
-- The public authority dependency is presently pinned to `d9c37ec` in `package.json`; update to a separately reviewed immutable revision only after full mixed replay is accepted/published. The initial pin does not authenticate a later head signed by a rotated provider key.
+- `src/lib/config.ts` holds source URL, feed ID, independent pin/anchor, database URL and cron secret. `verifyObserverAnchor` calls the authority library to verify the pinned anchor and initial provider key. `src/lib/source.ts` and the test-only HTTP publishers now exist; there is still no poll route or durable observer store.
+- The public authority dependency is pinned to reviewed `9d67299` in `package.json`, which includes complete-prefix mixed replay. The initial pin alone does not authenticate a later head signed by a rotated provider key; the HTTP governance test supplies all intervening leaves/checkpoints to replay.
 - `docs/source-pull-contract.md` fixes exact canonical JSON envelopes, bounded `head`, `checkpoints` and `leaves` GET routes, a provisional head selector, immediate checkpoint chain and contiguous positions. It correctly limits suppression detection to evidence the observer receives or independently retains.
 - A proposed `SOURCE_READ_TOKEN` is pending the user's decision because it adds an app-issued machine credential. Until decided, fixture tests can pass an explicitly supplied header but production config must not silently introduce that auth convention.
 
@@ -26,7 +26,7 @@ Use native `fetch` with an explicit source origin, feed ID, fixed target hash an
 
 Source 401/403, 404/409, 429, 5xx, timeout and connection failure are retryable or operator-auth failures that leave coverage pending; they are not, by themselves, cryptographic suppression evidence. Malformed success bodies are source nonconformance; a separately authenticated fork or independent receipt conflict is a cryptographic finding. Keep response-body excerpts and credentials out of errors/logs. A caught fetch failure must not advance an accepted cursor.
 
-The fixture publisher lives in `test/source-fixture.ts` beside existing tests, avoiding a new directory convention, and serves real canonical envelopes/bytes from authority package artifacts over `node:http`. It supports deterministic outage, malformed/oversized pages, old/forked head, dropped range, delayed pages and provider-key rotation controls. Do not deploy it in the observer's production Next routes. A local HTTP smoke exercises the real client against the fixture; later store/poller tests reuse it.
+The transport fixture publisher lives in `test/source-fixture.ts` beside existing tests, avoiding a new directory convention, and serves canonical envelopes/bytes from authority package artifacts over `node:http`; its placeholder leaves are transport-only. The separate `test/governance-source-fixture.ts` serves a valid seven-leaf mixed history with provider rotation and two actors for replay. The current fixtures exercise malformed/oversized pages, old/provisional heads, delayed responses, wrong authority fields and HTTP paging. Dropped ranges, forked prior receipts, independent receipt conflicts and outage recovery remain for poller/store tests. Neither fixture is deployed in production Next routes.
 
 ## Changes and proposed names
 
