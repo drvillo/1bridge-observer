@@ -16,7 +16,7 @@ interface GovernanceVector {
   expected: authority.GovernanceReplaySnapshot
 }
 
-const VECTOR_SHA256 = 'b648945a00e00ea998b8f6a070d620a4ecd2ce05882d66c17b65ca13767d18b5'
+const VECTOR_SHA256 = 'ae3fa8c88bc7e841101b8e8ffadf167a8b4d323d3645bc034fb7284c60945ef8'
 const VECTOR_URL = new URL('./governance-v1.json', import.meta.url)
 
 function vector(): GovernanceVector {
@@ -44,6 +44,7 @@ function sourceHistory(fixture: GovernanceVector) {
 describe('frozen authority-to-observer governance vector', () => {
   it('replays exact public bytes through the real HTTP pull contract', async () => {
     const fixture = vector()
+    expect(fixture.expected.anchorPin).toBe(fixture.anchorPin)
     const source = await startGovernanceSource(sourceHistory(fixture))
     try {
       await expect(verifySourceTarget(config(fixture, source.baseUrl),
