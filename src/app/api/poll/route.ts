@@ -1,24 +1,16 @@
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { importSigningPrivateKey, importSigningPublicKey, signRecord,
   verifyRecord } from '@drvillo/1bridge-authority'
 import { loadObserverConfig } from '../../../lib/config'
+import { authorizedBearer } from '../../../lib/bearer'
 import { pollObserverOnce } from '../../../lib/poll'
 import { installObserverSchema, openObserverStore, publishObserverCoverage } from '../../../lib/store'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-function authorized(request: Request, secret: string | undefined): boolean {
-  if (!secret || Buffer.byteLength(secret, 'utf8') < 32) return false
-  const presented = request.headers.get('authorization')
-  if (!presented?.startsWith('Bearer ')) return false
-  const received = Buffer.from(presented.slice(7), 'utf8')
-  const expected = Buffer.from(secret, 'utf8')
-  return received.length === expected.length && timingSafeEqual(received, expected)
-}
-
 export async function GET(request: Request): Promise<Response> {
-  if (!authorized(request, process.env.CRON_SECRET)) return new Response('Unauthorized', { status: 401 })
+  if (!authorizedBearer(request, process.env.CRON_SECRET)) return new Response('Unauthorized', { status: 401 })
   let config: ReturnType<typeof loadObserverConfig>
   let signer: CryptoKeyPair
   try {

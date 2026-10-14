@@ -8,7 +8,7 @@ import {
   signAuthorityAnchor,
   type SignedAuthorityAnchor,
 } from '@drvillo/1bridge-authority'
-import { loadObserverConfig, verifyObserverAnchor } from '../src/lib/config'
+import { loadObserverConfig, loadReportReadConfig, verifyObserverAnchor } from '../src/lib/config'
 
 const valid = {
   NODE_ENV: 'production',
@@ -98,6 +98,22 @@ describe('loadObserverConfig', () => {
       expect(() => loadObserverConfig({ ...valid, OBSERVER_SCHEMA: schema })).toThrow(/OBSERVER_SCHEMA/)
     },
   )
+})
+
+describe('loadReportReadConfig', () => {
+  it('reads a retained report without polling-only configuration', () => {
+    expect(loadReportReadConfig({
+      FEED_ID: valid.FEED_ID,
+      ANCHOR_PIN: valid.ANCHOR_PIN,
+      DATABASE_URL: valid.DATABASE_URL,
+      OBSERVER_SCHEMA: 'customer_observer',
+    })).toEqual({
+      feedId: valid.FEED_ID,
+      anchorPin: valid.ANCHOR_PIN,
+      databaseUrl: valid.DATABASE_URL,
+      databaseSchema: 'customer_observer',
+    })
+  })
 })
 
 describe('verifyObserverAnchor', () => {

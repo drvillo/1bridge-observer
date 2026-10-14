@@ -734,3 +734,38 @@ export async function publishObserverCoverage(store: ObserverStore, feedId: stri
     return existing
   })
 }
+
+/** Reads the newest retained report under a separately trusted observer public key. */
+export async function readLatestObserverCoverage(store: ObserverStore, feedId: string,
+  trustedPin: string, trustedKey: CryptoKey): Promise<SignedObserverReport | null> {
+  if (typeof feedId !== 'string' || !HASH.test(feedId)) throw new TypeError('Invalid observer feed ID')
+  if (typeof trustedPin !== 'string' || !HASH.test(trustedPin)) throw new TypeError('Invalid anchor pin')
+  const observerKeyId = await signingKeyId(trustedKey)
+  const retained = await transaction(store, async client => {
+    const feed = await client.query<{ anchor_pin: string }>(
+      'SELECT anchor_pin FROM observer_feeds WHERE feed_id=$1', [feedId])
+    if (feed.rows.length !== 1) return null
+    const report = await client.query<{ report_hash: string; covered_checkpoint_hash: string;
+      observer_key_id: string; signed_report: Buffer }>(
+      `SELECT report_hash, covered_checkpoint_hash, observer_key_id, signed_report FROM observer_reports
+       WHERE feed_id=$1 AND observer_key_id=$2
+       ORDER BY report_revision DESC, created_at DESC LIMIT 1`, [feedId, observerKeyId])
+    if (!report.rows[0]) return null
+    return { anchorPin: feed.rows[0]!.anchor_pin, hash: report.rows[0].report_hash,
+      checkpointHash: report.rows[0].covered_checkpoint_hash, observerKeyId: report.rows[0].observer_key_id,
+      bytes: new Uint8Array(report.rows[0].signed_report) }
+  })
+  if (retained === null) return null
+  if (retained.anchorPin !== trustedPin) throw new TypeError('Stored observer anchor pin mismatch')
+  if (createHash('sha256').update(retained.bytes).digest('hex') !== retained.hash) {
+    throw new TypeError('Stored observer report hash mismatch')
+  }
+  const signed = parseCanonical(retained.bytes) as unknown as SignedObserverReport
+  if (!await verifyObserverReport(signed, trustedKey,
+    { feedId, anchorPin: trustedPin })) throw new TypeError('Stored observer report failed verification')
+  if (signed.statement.coveredCheckpointHash !== retained.checkpointHash
+    || signed.statement.observerKeyId !== retained.observerKeyId) {
+    throw new TypeError('Stored observer report identity mismatch')
+  }
+  return signed
+}

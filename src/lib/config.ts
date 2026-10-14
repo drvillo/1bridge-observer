@@ -17,10 +17,35 @@ export interface ObserverConfig {
   cronSecret: string
 }
 
+export type ReportReadConfig = Pick<ObserverConfig,
+  'feedId' | 'anchorPin' | 'databaseUrl' | 'databaseSchema'>
+
 type Environment = Record<string, string | undefined>
 
 export function loadObserverConfig(env: Environment): ObserverConfig {
   const sourceBaseUrl = parseSourceUrl(env.SOURCE_BASE_URL, env.NODE_ENV)
+  const report = loadReportReadConfig(env)
+  const signedAnchor = env.SIGNED_ANCHOR
+  try {
+    if (!signedAnchor || decodeBase64Url(signedAnchor, 16384).length === 0) {
+      throw new TypeError('Missing signed anchor')
+    }
+  } catch {
+    throw new Error('Invalid SIGNED_ANCHOR')
+  }
+
+  const cronSecret = env.CRON_SECRET
+  if (!cronSecret || Buffer.byteLength(cronSecret, 'utf8') < 32) {
+    throw new Error('Invalid CRON_SECRET')
+  }
+  if (env.REPORT_READ_TOKEN && env.REPORT_READ_TOKEN === cronSecret) {
+    throw new Error('Report reader and cron credentials must be distinct')
+  }
+
+  return { sourceBaseUrl, ...report, signedAnchor, cronSecret }
+}
+
+export function loadReportReadConfig(env: Environment): ReportReadConfig {
   const feedId = env.FEED_ID
   if (!feedId || !/^[0-9a-f]{64}$/.test(feedId)) {
     throw new Error('Invalid FEED_ID')
@@ -29,15 +54,6 @@ export function loadObserverConfig(env: Environment): ObserverConfig {
   const anchorPin = env.ANCHOR_PIN
   if (!anchorPin || !/^[0-9a-f]{64}$/.test(anchorPin)) {
     throw new Error('Invalid ANCHOR_PIN')
-  }
-
-  const signedAnchor = env.SIGNED_ANCHOR
-  try {
-    if (!signedAnchor || decodeBase64Url(signedAnchor, 16384).length === 0) {
-      throw new TypeError('Missing signed anchor')
-    }
-  } catch {
-    throw new Error('Invalid SIGNED_ANCHOR')
   }
 
   const databaseUrl = env.DATABASE_URL
@@ -65,12 +81,7 @@ export function loadObserverConfig(env: Environment): ObserverConfig {
     throw new Error('Invalid OBSERVER_SCHEMA')
   }
 
-  const cronSecret = env.CRON_SECRET
-  if (!cronSecret || Buffer.byteLength(cronSecret, 'utf8') < 32) {
-    throw new Error('Invalid CRON_SECRET')
-  }
-
-  return { sourceBaseUrl, feedId, anchorPin, signedAnchor, databaseUrl, databaseSchema, cronSecret }
+  return { feedId, anchorPin, databaseUrl, databaseSchema }
 }
 
 export async function verifyObserverAnchor(config: ObserverConfig): Promise<AuthoritySnapshot> {

@@ -18,6 +18,9 @@ describe('signed observer coverage', () => {
     expect(typeof exports.publishObserverCoverage).toBe('function')
     const publish = exports.publishObserverCoverage as (store: observerStore.ObserverStore, feedId: string,
       signer: CryptoKeyPair) => Promise<authority.SignedObserverReport | null>
+    expect(typeof exports.readLatestObserverCoverage).toBe('function')
+    const readLatest = exports.readLatestObserverCoverage as (store: observerStore.ObserverStore,
+      feedId: string, trustedPin: string, trustedKey: CryptoKey) => Promise<authority.SignedObserverReport | null>
     const history = await buildGovernanceSource()
     const source = await startGovernanceSource(history)
     const store = observerStore.openObserverStore(databaseUrl, 'observer_report')
@@ -63,6 +66,16 @@ describe('signed observer coverage', () => {
       expect(await authority.verifyObserverReport(updated!, signer.publicKey,
         { feedId, anchorPin: history.anchorPin })).toBe(true)
       expect((await inspector.query('SELECT count(*) AS total FROM observer_report.observer_reports')).rows[0].total).toBe('2')
+      expect(await readLatest(store, feedId, history.anchorPin, signer.publicKey)).toEqual(updated)
+      await expect(readLatest(store, feedId, 'a'.repeat(64), signer.publicKey))
+        .rejects.toThrow(/pin mismatch/i)
+      expect(await readLatest(store, feedId, history.anchorPin,
+        (await authority.generateSigningKey()).publicKey)).toBeNull()
+      const earlierHash = await authority.checkpointHash(history.checkpoints.at(-2)!.statement)
+      await inspector.query(`UPDATE observer_report.observer_reports SET covered_checkpoint_hash=$1
+        WHERE report_revision=(SELECT max(report_revision) FROM observer_report.observer_reports)`, [earlierHash])
+      await expect(readLatest(store, feedId, history.anchorPin, signer.publicKey))
+        .rejects.toThrow(/identity mismatch/i)
     } finally { await store.close(); await source.close() }
   })
 })
