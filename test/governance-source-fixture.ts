@@ -14,6 +14,8 @@ export interface GovernanceSourceHistory {
   checkpoints: authority.SignedCheckpoint[]
   wrongRoot: authority.SignedCheckpoint
   wrongPolicy: authority.SignedCheckpoint
+  resignedFinal: authority.SignedCheckpoint
+  alternateLastLeaf: Uint8Array
   actorKeyIds: string[]
   rotatedPublicKey: CryptoKey
   firstActionHash: string
@@ -120,10 +122,13 @@ export async function buildGovernanceSource(): Promise<GovernanceSourceHistory> 
     checkpointKeySpki: await authority.exportSigningPublicKey(rotated.publicKey),
     checkpointKeyId: await authority.signingKeyId(rotated.publicKey) }, rotated)
   const second = await appendAction(alice, ALICE, '3'.repeat(64), first.integrated, rotated)
+  const alternate = await action(state, checkpoints.at(-2)!, alice, ALICE, '4'.repeat(64), first.integrated)
+  const alternateLastLeaf = authority.governanceCompletionLeaf(alternate)
   const final = checkpoints.at(-1)!
   const wrongRoot = await authority.signCheckpoint({ ...final.statement, authorityRoot: WRONG }, rotated)
   const wrongPolicy = await authority.signCheckpoint({ ...final.statement, policyEpoch: final.statement.policyEpoch + 1 }, rotated)
-  return { signedAnchor, anchorPin, leaves, checkpoints, wrongRoot, wrongPolicy,
+  const resignedFinal = await authority.signCheckpoint(final.statement, rotated)
+  return { signedAnchor, anchorPin, leaves, checkpoints, wrongRoot, wrongPolicy, resignedFinal, alternateLastLeaf,
     actorKeyIds: [await authority.signingKeyId(alice.publicKey), await authority.signingKeyId(bob.publicKey)],
     rotatedPublicKey: rotated.publicKey,
     firstActionHash: first.integrated.actionHash, secondActionPredecessor: second.signed.statement.previousActionHash }
@@ -135,9 +140,19 @@ export interface GovernanceSourceServer {
   close(): Promise<void>
 }
 
+export interface GovernanceSourceFaults {
+  omitGenesis?: boolean
+  omitTarget?: boolean
+  skipLeaf?: boolean
+  changeLastLeaf?: boolean
+  unavailableLeaves?: boolean
+}
+
 export async function startGovernanceSource(history: GovernanceSourceHistory,
-  candidate: authority.SignedCheckpoint = history.checkpoints.at(-1)!): Promise<GovernanceSourceServer> {
-  const checkpoints = [...history.checkpoints.slice(0, -1), candidate]
+  candidate: authority.SignedCheckpoint = history.checkpoints.at(-1)!,
+  pageCandidate: authority.SignedCheckpoint = candidate,
+  faults: GovernanceSourceFaults = {}): Promise<GovernanceSourceServer> {
+  const checkpoints = [...history.checkpoints.slice(0, -1), pageCandidate]
   const hashes = await Promise.all(checkpoints.map(item => authority.checkpointHash(item.statement)))
   const target = hashes.at(-1)!
   const calls: URL[] = []
@@ -154,20 +169,27 @@ export async function startGovernanceSource(history: GovernanceSourceHistory,
     } else if (url.pathname === `${prefix}/checkpoints` && requestedTarget === target
       && Number.isSafeInteger(limit) && limit >= 1 && limit <= 16) {
       const after = url.searchParams.get('after')
-      const index = after === 'start' ? 0 : hashes.indexOf(after ?? '') + 1
+      const index = after === 'start' ? (faults.omitGenesis ? 1 : 0) : hashes.indexOf(after ?? '') + 1
       if (index < 0 || (after !== 'start' && !hashes.includes(after ?? ''))) {
         res.writeHead(409); res.end(); return
       }
       body = { version: 1, target, after,
-        items: checkpoints.slice(index, index + limit).map(item => authority.encodeBase64Url(authority.canonicalBytes(item))) }
+        items: checkpoints.slice(index, Math.min(index + limit, checkpoints.length - (faults.omitTarget ? 1 : 0)))
+          .map(item => authority.encodeBase64Url(authority.canonicalBytes(item))) }
     } else if (url.pathname === `${prefix}/leaves` && requestedTarget === target
       && Number.isSafeInteger(limit) && limit >= 1 && limit <= 64) {
+      if (faults.unavailableLeaves) { res.writeHead(503); res.end(); return }
       const start = Number(url.searchParams.get('start'))
       if (!Number.isSafeInteger(start) || start < 0 || start > candidate.statement.size) {
         res.writeHead(400); res.end(); return
       }
+      const offset = faults.skipLeaf && start === history.leaves.length - 1 ? 1 : 0
+      const selected = history.leaves.slice(start + offset,
+        Math.min(start + limit + offset, candidate.statement.size))
       body = { version: 1, target, start,
-        items: history.leaves.slice(start, Math.min(start + limit, candidate.statement.size)).map(authority.encodeBase64Url) }
+        items: selected.map((leaf, index) => authority.encodeBase64Url(
+          faults.changeLastLeaf && start + offset + index === history.leaves.length - 1
+            ? history.alternateLastLeaf : leaf)) }
     } else {
       res.writeHead(404); res.end(); return
     }
