@@ -1,12 +1,16 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import pg, { type PoolClient } from 'pg'
-import { decodeBase64Url } from '@drvillo/1bridge-authority'
+import { canonicalBytes, checkpointHash, decodeBase64Url, hashLeaf, parseCanonical,
+  type SignedCheckpoint } from '@drvillo/1bridge-authority'
 import { verifyObserverAnchor, type ObserverConfig } from './config'
+import type { CheckpointPageItem, ProvisionalFeedHead } from './source'
 
 const HASH = /^[0-9a-f]{64}$/
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/
 const MAX_LEASE_MS = 300_000
+const MAX_LEAF_BATCH_BYTES = 256 * 1024
+const MAX_CHECKPOINT_BATCH_BYTES = 64 * 1024
 
 export interface ObserverStore { close(): Promise<void> }
 export interface ObserverLease {
@@ -16,6 +20,17 @@ export interface ObserverLease {
   version: number
   expiresAt: Date
 }
+export interface ObserverTargetLease extends ObserverLease {
+  attemptId: number
+  targetHash: string
+  targetSize: number
+}
+export interface ObserverBatch {
+  start: number
+  leaves: readonly Uint8Array[]
+  checkpoints: readonly CheckpointPageItem[]
+}
+export interface StagedBatchResult { alreadyApplied: boolean; claim: ObserverTargetLease }
 
 interface StoreConnection { pool: pg.Pool; schema: string }
 const connections = new WeakMap<ObserverStore, StoreConnection>()
@@ -52,6 +67,108 @@ function safeCount(value: unknown): number {
   const number = Number(value)
   if (!Number.isSafeInteger(number)) throw new RangeError('Database counter exceeds safe integer range')
   return number
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return Buffer.from(left).equals(Buffer.from(right))
+}
+
+async function snapshotTarget(head: ProvisionalFeedHead, feedId: string) {
+  if (!head || head.provisional !== true || !(head.signedCheckpointBytes instanceof Uint8Array)
+    || head.signedCheckpointBytes.length > 1024 || !HASH.test(head.checkpointHash)) {
+    throw new TypeError('Invalid provisional target')
+  }
+  const bytes = new Uint8Array(head.signedCheckpointBytes)
+  const signed = parseCanonical(bytes) as unknown as SignedCheckpoint
+  if (!equalBytes(canonicalBytes(head.signedCheckpoint), bytes)) throw new TypeError('Provisional checkpoint bytes disagree')
+  const hash = await checkpointHash(signed.statement)
+  if (hash !== head.checkpointHash || signed.statement.feedId !== feedId) throw new TypeError('Provisional target identity mismatch')
+  return { hash, size: signed.statement.size, bytes: Buffer.from(bytes) }
+}
+
+interface LockedClaim {
+  version: string
+  lease_epoch: string
+  lease_owner: string | null
+  lease_until: Date | null
+  lease_valid: boolean
+  active_attempt_id: string | null
+  staged_next_index: string
+  accepted_size: string
+  accepted_checkpoint_hash: string | null
+  staged_checkpoint_tail_hash: string | null
+  staged_checkpoint_tail_position: string | null
+}
+
+async function lockClaim(client: PoolClient, claim: ObserverLease): Promise<LockedClaim> {
+  if (!claim || typeof claim.feedId !== 'string' || !HASH.test(claim.feedId)
+    || typeof claim.workerId !== 'string' || !Number.isSafeInteger(claim.epoch)
+    || !Number.isSafeInteger(claim.version)) throw new TypeError('Invalid observer claim')
+  const result = await client.query<LockedClaim>(
+    `SELECT version, lease_epoch, lease_owner, lease_until,
+            lease_until > clock_timestamp() AS lease_valid, active_attempt_id,
+            staged_next_index, accepted_size, accepted_checkpoint_hash,
+            staged_checkpoint_tail_hash, staged_checkpoint_tail_position
+       FROM observer_cursors WHERE feed_id=$1 FOR UPDATE`, [claim.feedId])
+  const row = result.rows[0]
+  if (!row || row.lease_owner !== claim.workerId || !row.lease_valid
+    || safeCount(row.lease_epoch) !== claim.epoch || safeCount(row.version) !== claim.version) {
+    throw new TypeError('Stale observer claim')
+  }
+  return row
+}
+
+function denseItems<T>(value: readonly T[], max: number): T[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype
+    || value.length > max || Reflect.ownKeys(value).length !== value.length + 1) {
+    throw new TypeError('Expected bounded dense observer batch')
+  }
+  const result: T[] = []
+  for (let index = 0; index < value.length; index++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new TypeError('Expected batch data item')
+    result.push(descriptor.value)
+  }
+  return result
+}
+
+async function snapshotBatch(batch: ObserverBatch, feedId: string) {
+  if (!batch || !Number.isSafeInteger(batch.start) || batch.start < 0) throw new TypeError('Invalid batch start')
+  const leaves = denseItems(batch.leaves, 64)
+  const checkpoints = denseItems(batch.checkpoints, 16)
+  if (leaves.length + checkpoints.length === 0) throw new TypeError('Empty observer batch')
+  if (!Number.isSafeInteger(batch.start + leaves.length)) throw new RangeError('Observer batch index exceeds safe range')
+  let leafBytes = 0
+  const leafSnapshots = [] as { index: number; hash: string; bytes: Buffer }[]
+  for (let offset = 0; offset < leaves.length; offset++) {
+    const value = leaves[offset]
+    if (!(value instanceof Uint8Array) || value.length === 0) throw new TypeError('Invalid observer leaf')
+    leafBytes += value.length
+    if (leafBytes > MAX_LEAF_BATCH_BYTES) throw new RangeError('Observer leaf batch exceeds byte limit')
+    const bytes = Buffer.from(value)
+    parseCanonical(bytes)
+    leafSnapshots.push({ index: batch.start + offset, hash: await hashLeaf(bytes), bytes })
+  }
+  let checkpointBytes = 0
+  const checkpointSnapshots = [] as { hash: string; size: number; previous: string | null; bytes: Buffer }[]
+  for (const value of checkpoints) {
+    if (!value || !(value.bytes instanceof Uint8Array) || !HASH.test(value.hash)) {
+      throw new TypeError('Invalid observer checkpoint item')
+    }
+    checkpointBytes += value.bytes.length
+    if (checkpointBytes > MAX_CHECKPOINT_BATCH_BYTES) throw new RangeError('Observer checkpoint batch exceeds byte limit')
+    const bytes = Buffer.from(value.bytes)
+    const signed = parseCanonical(bytes) as unknown as SignedCheckpoint
+    if (!equalBytes(canonicalBytes(value.signed), bytes)
+      || typeof signed.signature !== 'string' || decodeBase64Url(signed.signature, 64).length !== 64
+      || signed.statement.feedId !== feedId || await checkpointHash(signed.statement) !== value.hash) {
+      throw new TypeError('Observer checkpoint item identity mismatch')
+    }
+    checkpointSnapshots.push({ hash: value.hash, size: signed.statement.size,
+      previous: signed.statement.previous, bytes })
+  }
+  return { start: batch.start, end: batch.start + leaves.length, leaves: leafSnapshots,
+    checkpoints: checkpointSnapshots }
 }
 
 /** Opens one small, customer-owned Postgres pool under a pre-created schema. */
@@ -116,4 +233,152 @@ export async function claimObserverLease(store: ObserverStore, feedId: string, w
   if (!(row.lease_until instanceof Date) || !Number.isFinite(row.lease_until.getTime())) throw new TypeError('Invalid database lease time')
   return { feedId, workerId, epoch: safeCount(row.lease_epoch), version: safeCount(row.version),
     expiresAt: new Date(row.lease_until) }
+}
+
+/** Fixes one exact but still unauthenticated signed target under a fenced lease. */
+export async function beginObserverTarget(store: ObserverStore, claim: ObserverLease,
+  head: ProvisionalFeedHead): Promise<ObserverTargetLease> {
+  const target = await snapshotTarget(head, claim.feedId)
+  return transaction(store, async client => {
+    const cursor = await lockClaim(client, claim)
+    if (!(cursor.lease_until instanceof Date)) throw new TypeError('Invalid observer lease time')
+    let attemptId: number
+    let version = safeCount(cursor.version)
+    if (cursor.active_attempt_id !== null) {
+      attemptId = safeCount(cursor.active_attempt_id)
+      const existing = await client.query<{ target_hash: string; target_size: string;
+        signed_checkpoint: Buffer; status: string }>(
+        'SELECT target_hash, target_size, signed_checkpoint, status FROM observer_targets WHERE feed_id=$1 AND attempt_id=$2',
+        [claim.feedId, attemptId])
+      const row = existing.rows[0]
+      if (!row || row.status !== 'active' || row.target_hash !== target.hash
+        || safeCount(row.target_size) !== target.size || !row.signed_checkpoint.equals(target.bytes)) {
+        throw new TypeError('Different provisional target already active')
+      }
+    } else {
+      if (version === Number.MAX_SAFE_INTEGER) throw new RangeError('Observer cursor version exhausted')
+      const inserted = await client.query<{ attempt_id: string }>(
+        `INSERT INTO observer_targets(feed_id, target_hash, target_size, signed_checkpoint)
+         VALUES($1,$2,$3,$4) RETURNING attempt_id`,
+        [claim.feedId, target.hash, target.size, target.bytes])
+      attemptId = safeCount(inserted.rows[0]?.attempt_id)
+      await client.query('UPDATE observer_cursors SET active_attempt_id=$2, version=version+1 WHERE feed_id=$1',
+        [claim.feedId, attemptId])
+      version++
+    }
+    return { feedId: claim.feedId, workerId: claim.workerId, epoch: claim.epoch,
+      version, expiresAt: new Date(cursor.lease_until), attemptId,
+      targetHash: target.hash, targetSize: target.size }
+  })
+}
+
+/** Retains exact source bytes under the fixed target; staged bytes are not verified coverage. */
+export async function stageObserverBatch(store: ObserverStore, claim: ObserverTargetLease,
+  batch: ObserverBatch): Promise<StagedBatchResult> {
+  const snapshot = await snapshotBatch(batch, claim.feedId)
+  return transaction(store, async client => {
+    const cursor = await lockClaim(client, claim)
+    if (!Number.isSafeInteger(claim.attemptId) || claim.attemptId < 1
+      || !HASH.test(claim.targetHash) || !Number.isSafeInteger(claim.targetSize)
+      || cursor.active_attempt_id === null || safeCount(cursor.active_attempt_id) !== claim.attemptId
+      || !(cursor.lease_until instanceof Date)) throw new TypeError('Stale observer target claim')
+    const targetResult = await client.query<{ target_hash: string; target_size: string; signed_checkpoint: Buffer; status: string }>(
+      'SELECT target_hash, target_size, signed_checkpoint, status FROM observer_targets WHERE feed_id=$1 AND attempt_id=$2',
+      [claim.feedId, claim.attemptId])
+    const target = targetResult.rows[0]
+    if (!target || target.status !== 'active' || target.target_hash !== claim.targetHash
+      || safeCount(target.target_size) !== claim.targetSize) throw new TypeError('Stale observer target claim')
+
+    const stagedNext = safeCount(cursor.staged_next_index)
+    const first = snapshot.checkpoints[0]
+    const repeatedCheckpoint = snapshot.leaves.length === 0 && first
+      ? await client.query<{ position: string }>(
+        'SELECT position FROM observer_staged_checkpoints WHERE feed_id=$1 AND attempt_id=$2 AND statement_hash=$3',
+        [claim.feedId, claim.attemptId, first.hash])
+      : null
+    if ((snapshot.start < stagedNext && snapshot.end <= stagedNext)
+      || (snapshot.start === stagedNext && repeatedCheckpoint?.rows.length === 1)) {
+      for (const leaf of snapshot.leaves) {
+        const stored = await client.query<{ leaf_hash: string; leaf_bytes: Buffer }>(
+          'SELECT leaf_hash, leaf_bytes FROM observer_staged_leaves WHERE feed_id=$1 AND attempt_id=$2 AND leaf_index=$3',
+          [claim.feedId, claim.attemptId, leaf.index])
+        if (stored.rows[0]?.leaf_hash !== leaf.hash || !stored.rows[0]?.leaf_bytes.equals(leaf.bytes)) {
+          throw new TypeError('Previously staged leaf changed')
+        }
+      }
+      if (first) {
+        const row = await client.query<{ position: string }>(
+          'SELECT position FROM observer_staged_checkpoints WHERE feed_id=$1 AND attempt_id=$2 AND statement_hash=$3',
+          [claim.feedId, claim.attemptId, first.hash])
+        if (row.rows.length !== 1) throw new TypeError('Previously staged checkpoint changed')
+        const position = safeCount(row.rows[0]?.position)
+        const stored = await client.query<{ position: string; statement_hash: string; checkpoint_size: string;
+          previous_hash: string | null; signed_checkpoint: Buffer }>(
+          `SELECT position, statement_hash, checkpoint_size, previous_hash, signed_checkpoint
+             FROM observer_staged_checkpoints WHERE feed_id=$1 AND attempt_id=$2 AND position >= $3 AND position < $4
+             ORDER BY position`, [claim.feedId, claim.attemptId, position, position + snapshot.checkpoints.length])
+        if (stored.rows.length !== snapshot.checkpoints.length || stored.rows.some((row, offset) => {
+          const item = snapshot.checkpoints[offset]!
+          return safeCount(row.position) !== position + offset || row.statement_hash !== item.hash
+            || safeCount(row.checkpoint_size) !== item.size || row.previous_hash !== item.previous
+            || !row.signed_checkpoint.equals(item.bytes)
+        })) throw new TypeError('Previously staged checkpoint changed')
+      }
+      return { alreadyApplied: true, claim: { ...claim, expiresAt: new Date(cursor.lease_until) } }
+    }
+    if (snapshot.start !== stagedNext) throw new TypeError('Observer batch start differs from staging cursor')
+    if (snapshot.end > claim.targetSize) throw new RangeError('Observer batch exceeds fixed target')
+    if (safeCount(cursor.version) === Number.MAX_SAFE_INTEGER) throw new RangeError('Observer cursor version exhausted')
+    let predecessor = cursor.staged_checkpoint_tail_hash ?? cursor.accepted_checkpoint_hash
+    let position = cursor.staged_checkpoint_tail_position === null ? -1 : safeCount(cursor.staged_checkpoint_tail_position)
+    let previousSize = -1
+    if (predecessor !== null && position === -1) {
+      const accepted = await client.query<{ position: string; checkpoint_size: string }>(
+        'SELECT position, checkpoint_size FROM observer_checkpoints WHERE feed_id=$1 AND statement_hash=$2',
+        [claim.feedId, predecessor])
+      if (accepted.rows.length !== 1) throw new TypeError('Accepted observer checkpoint is missing')
+      position = safeCount(accepted.rows[0]?.position)
+      previousSize = safeCount(accepted.rows[0]?.checkpoint_size)
+    } else if (predecessor !== null) {
+      const staged = await client.query<{ checkpoint_size: string }>(
+        'SELECT checkpoint_size FROM observer_staged_checkpoints WHERE feed_id=$1 AND attempt_id=$2 AND statement_hash=$3',
+        [claim.feedId, claim.attemptId, predecessor])
+      if (staged.rows.length !== 1) throw new TypeError('Staged observer checkpoint tail is missing')
+      previousSize = safeCount(staged.rows[0]?.checkpoint_size)
+    }
+    const stagedCheckpoints = [] as { position: number; hash: string; size: number;
+      previous: string | null; bytes: Buffer }[]
+    for (const item of snapshot.checkpoints) {
+      if (item.previous !== predecessor || item.size > snapshot.end
+        || item.size > claim.targetSize || item.size <= previousSize
+        || (position === -1 && item.size !== 0)
+        || (item.hash === claim.targetHash && !item.bytes.equals(target.signed_checkpoint))) {
+        throw new TypeError('Observer checkpoint does not extend staged target')
+      }
+      if (predecessor === claim.targetHash) throw new TypeError('Observer checkpoint extends fixed target')
+      position++
+      if (!Number.isSafeInteger(position)) throw new RangeError('Observer checkpoint position exceeds safe range')
+      stagedCheckpoints.push({ ...item, position })
+      predecessor = item.hash
+      previousSize = item.size
+    }
+    for (const leaf of snapshot.leaves) {
+      await client.query(
+        'INSERT INTO observer_staged_leaves(feed_id, attempt_id, leaf_index, leaf_hash, leaf_bytes) VALUES($1,$2,$3,$4,$5)',
+        [claim.feedId, claim.attemptId, leaf.index, leaf.hash, leaf.bytes])
+    }
+    for (const item of stagedCheckpoints) {
+      await client.query(
+        `INSERT INTO observer_staged_checkpoints(feed_id, attempt_id, position, statement_hash,
+           checkpoint_size, previous_hash, signed_checkpoint) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+        [claim.feedId, claim.attemptId, item.position, item.hash, item.size, item.previous, item.bytes])
+    }
+    await client.query(
+      `UPDATE observer_cursors SET staged_next_index=$2, staged_checkpoint_tail_hash=$3,
+         staged_checkpoint_tail_position=$4, version=version+1 WHERE feed_id=$1`,
+      [claim.feedId, snapshot.end, stagedCheckpoints.length ? predecessor : cursor.staged_checkpoint_tail_hash,
+        stagedCheckpoints.length ? position : cursor.staged_checkpoint_tail_position])
+    return { alreadyApplied: false, claim: { ...claim, version: claim.version + 1,
+      expiresAt: new Date(cursor.lease_until) } }
+  })
 }

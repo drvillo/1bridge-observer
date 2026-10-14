@@ -2,19 +2,37 @@ import { readFileSync } from 'node:fs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import pg from 'pg'
 import * as authority from '@drvillo/1bridge-authority'
-import { claimObserverLease, installObserverSchema, openObserverStore, registerObserverFeed,
+import { beginObserverTarget, claimObserverLease, installObserverSchema, openObserverStore, registerObserverFeed,
+  stageObserverBatch,
   type ObserverStore } from '../src/lib/store'
 import type { ObserverConfig } from '../src/lib/config'
+import type { ProvisionalFeedHead } from '../src/lib/source'
+import type { CheckpointPageItem } from '../src/lib/source'
 
 const databaseUrl = process.env.OBSERVER_TEST_DATABASE_URL
 if (!databaseUrl) throw new Error('OBSERVER_TEST_DATABASE_URL must identify a disposable database')
 
 const vector = authority.parseCanonical(readFileSync(new URL('./governance-v1.json', import.meta.url))) as unknown as {
-  anchorPin: string; signedAnchor: string; expected: authority.GovernanceReplaySnapshot
+  anchorPin: string; signedAnchor: string; leaves: string[]; checkpoints: string[]; expected: authority.GovernanceReplaySnapshot
 }
 const config: ObserverConfig = { sourceBaseUrl: 'https://evidence.example', feedId: vector.expected.feedId,
   anchorPin: vector.anchorPin, signedAnchor: vector.signedAnchor,
   databaseUrl, cronSecret: 'x'.repeat(32) }
+
+async function finalTarget(): Promise<ProvisionalFeedHead> {
+  const signedCheckpointBytes = authority.decodeBase64Url(vector.checkpoints.at(-1)!)
+  const signedCheckpoint = authority.parseCanonical(signedCheckpointBytes) as unknown as authority.SignedCheckpoint
+  return { provisional: true, checkpointHash: await authority.checkpointHash(signedCheckpoint.statement),
+    signedCheckpoint, signedCheckpointBytes }
+}
+
+async function checkpointItems(start: number, end: number): Promise<CheckpointPageItem[]> {
+  return Promise.all(vector.checkpoints.slice(start, end).map(async item => {
+    const bytes = authority.decodeBase64Url(item)
+    const signed = authority.parseCanonical(bytes) as unknown as authority.SignedCheckpoint
+    return { bytes, signed, hash: await authority.checkpointHash(signed.statement) }
+  }))
+}
 
 describe('durable observer store', () => {
   let store: ObserverStore
@@ -82,5 +100,74 @@ describe('durable observer store', () => {
     await inspector.query("UPDATE observer_test.observer_cursors SET lease_until=clock_timestamp()-interval '1 second'")
     const replacement = await claimObserverLease(store, config.feedId, 'worker-b', 30_000)
     expect(replacement).toMatchObject({ workerId: 'worker-b', epoch: 3, version: 0 })
+  })
+
+  it('fixes one provisional target under the current lease and rejects stale claims', async () => {
+    const claim = await claimObserverLease(store, config.feedId, 'worker-b', 30_000)
+    const target = await finalTarget()
+    await expect(beginObserverTarget(store, claim!, { ...target, checkpointHash: '0'.repeat(64) })).rejects.toThrow()
+    expect((await inspector.query('SELECT count(*) AS total FROM observer_test.observer_targets')).rows[0].total).toBe('0')
+    const started = await beginObserverTarget(store, claim!, target)
+    expect(started).toMatchObject({ feedId: config.feedId, workerId: 'worker-b', epoch: claim!.epoch,
+      version: 1, targetHash: target.checkpointHash, targetSize: target.signedCheckpoint.statement.size })
+    expect(Number.isSafeInteger(started.attemptId) && started.attemptId > 0).toBe(true)
+    const rows = await inspector.query('SELECT attempt_id, target_hash, target_size, status FROM observer_test.observer_targets')
+    expect(rows.rows).toEqual([{ attempt_id: String(started.attemptId), target_hash: target.checkpointHash,
+      target_size: String(target.signedCheckpoint.statement.size), status: 'active' }])
+    const cursor = await inspector.query('SELECT accepted_size, staged_next_index, active_attempt_id, version FROM observer_test.observer_cursors')
+    expect(cursor.rows).toEqual([{ accepted_size: '0', staged_next_index: '0',
+      active_attempt_id: String(started.attemptId), version: '1' }])
+    const priorBytes = authority.decodeBase64Url(vector.checkpoints.at(-2)!)
+    const priorSigned = authority.parseCanonical(priorBytes) as unknown as authority.SignedCheckpoint
+    await expect(beginObserverTarget(store, started, { provisional: true,
+      checkpointHash: await authority.checkpointHash(priorSigned.statement),
+      signedCheckpoint: priorSigned, signedCheckpointBytes: priorBytes })).rejects.toThrow(/Different provisional target/)
+    const alteredSigned = { ...target.signedCheckpoint,
+      signature: authority.encodeBase64Url(new Uint8Array(64).fill(1)) }
+    await expect(beginObserverTarget(store, started, { ...target, signedCheckpoint: alteredSigned,
+      signedCheckpointBytes: authority.canonicalBytes(alteredSigned) })).rejects.toThrow(/Different provisional target/)
+    await expect(beginObserverTarget(store, claim!, target)).rejects.toThrow(/stale/i)
+    const reclaimed = await claimObserverLease(store, config.feedId, 'worker-b', 30_000)
+    await expect(beginObserverTarget(store, started, target)).rejects.toThrow(/stale/i)
+    const resumed = await beginObserverTarget(store, reclaimed!, target)
+    expect(resumed).toMatchObject({ attemptId: started.attemptId, epoch: reclaimed!.epoch, version: 1 })
+  })
+
+  it('stages two exact pages without advancing accepted coverage', async () => {
+    const target = await finalTarget()
+    const lease = await claimObserverLease(store, config.feedId, 'worker-b', 30_000)
+    const active = await beginObserverTarget(store, lease!, target)
+    const firstBatch = { start: 0, leaves: vector.leaves.slice(0, 3).map(item => authority.decodeBase64Url(item)),
+      checkpoints: await checkpointItems(0, 4) }
+    await expect(stageObserverBatch(store, active, { ...firstBatch,
+      checkpoints: firstBatch.checkpoints.slice(1) })).rejects.toThrow(/checkpoint/i)
+    expect((await inspector.query('SELECT count(*) AS total FROM observer_test.observer_staged_leaves')).rows[0].total).toBe('0')
+    const first = await stageObserverBatch(store, active, firstBatch)
+    expect(first).toMatchObject({ alreadyApplied: false, claim: { version: 2, attemptId: active.attemptId } })
+    const afterFirst = await inspector.query(
+      'SELECT staged_next_index, accepted_size, staged_checkpoint_tail_position FROM observer_test.observer_cursors')
+    expect(afterFirst.rows).toEqual([{ staged_next_index: '3', accepted_size: '0', staged_checkpoint_tail_position: '3' }])
+    const reclaimed = await claimObserverLease(store, config.feedId, 'worker-b', 30_000)
+    const resumed = await beginObserverTarget(store, reclaimed!, target)
+    const duplicate = await stageObserverBatch(store, resumed, firstBatch)
+    expect(duplicate).toMatchObject({ alreadyApplied: true, claim: { version: 2 } })
+    await expect(stageObserverBatch(store, resumed, { ...firstBatch,
+      leaves: [firstBatch.leaves[1]!, ...firstBatch.leaves.slice(1)] })).rejects.toThrow(/changed/i)
+    const secondBatch = { start: 3, leaves: vector.leaves.slice(3).map(item => authority.decodeBase64Url(item)),
+      checkpoints: await checkpointItems(4, 8) }
+    await expect(stageObserverBatch(store, active, secondBatch)).rejects.toThrow(/stale/i)
+    await expect(stageObserverBatch(store, duplicate.claim, { ...secondBatch, start: 4 })).rejects.toThrow(/start/i)
+    const second = await stageObserverBatch(store, duplicate.claim, secondBatch)
+    expect(second).toMatchObject({ alreadyApplied: false, claim: { version: 3, attemptId: active.attemptId } })
+    const final = await inspector.query(
+      'SELECT staged_next_index, accepted_size, staged_checkpoint_tail_hash, staged_checkpoint_tail_position, version FROM observer_test.observer_cursors')
+    expect(final.rows).toEqual([{ staged_next_index: '7', accepted_size: '0',
+      staged_checkpoint_tail_hash: target.checkpointHash, staged_checkpoint_tail_position: '7', version: '3' }])
+    expect((await inspector.query('SELECT count(*) AS total FROM observer_test.observer_staged_leaves')).rows[0].total).toBe('7')
+    expect((await inspector.query('SELECT count(*) AS total FROM observer_test.observer_staged_checkpoints')).rows[0].total).toBe('8')
+    expect((await inspector.query('SELECT count(*) AS total FROM observer_test.observer_leaves')).rows[0].total).toBe('0')
+    const checkpointOnly = { start: 7, leaves: [], checkpoints: await checkpointItems(7, 8) }
+    await expect(stageObserverBatch(store, second.claim, checkpointOnly)).resolves.toMatchObject({ alreadyApplied: true })
+    expect((await inspector.query('SELECT version FROM observer_test.observer_cursors')).rows[0].version).toBe('3')
   })
 })
