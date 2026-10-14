@@ -9,16 +9,19 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "bash test/store.integration.test.sh"
   },
   "dependencies": {
     "@drvillo/1bridge-authority": "github:drvillo/1bridge-authority#57c441f430ca1c4616167a0f97a67a2c273e087c",
     "next": "16.2.10",
+    "pg": "8.23.1",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@types/pg": "8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

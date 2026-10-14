@@ -24,6 +24,8 @@ jobs:
         run: pnpm test
       - name: Test Postgres schema
         run: bash test/schema.sql.test.sh
+      - name: Test durable Postgres store
+        run: pnpm test:integration
       - name: Lint
         run: pnpm lint
       - name: Typecheck
