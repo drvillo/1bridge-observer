@@ -1,6 +1,6 @@
 # Multi-tenant pull observer implementation plan
 
-> For agentic workers: use the Superpowers test-driven-development and executing-plans workflows task by task.
+Implementation contract and verification record. The shared profile is additive; the original single-feed routes remain available separately.
 
 **Goal:** Run one independent Vercel observer for every 1Bridge plan, discovering all pseudonymous workspace feeds from a single pinned public registry and reporting exact verified and pending coverage.
 
@@ -30,14 +30,14 @@
 
 | Path | Responsibility | Proposed name / design note |
 |---|---|---|
-| `src/lib/registry-source.ts` | Bounded fixed-target global HTTP fetch and response validation | `discoverRegistryHead`, `fetchRegistryCheckpoints`, `fetchRegistryEntries`, `fetchRegistryConsistency`; each does one request kind. |
+| `src/lib/registry-source.ts` | Bounded fixed-target global HTTP fetch and response validation | `discoverRegistryHead`, `fetchRegistryCheckpointPage`, `fetchRegistryEntryPage`, `fetchRegistryConsistency`; each does one request kind. |
 | `src/lib/registry-poll.ts` | Registry catch-up and durable staging | `pollRegistryOnce`; feed polling is a separate scheduler loop. |
-| `src/lib/config.ts` | Shared deployment config and independent pin validation | `loadSharedObserverConfig`, `verifyRegistryPin`; retain existing per-feed type privately during migration. |
+| `src/lib/config.ts` | Shared deployment config and independent pin validation | `loadSharedObserverConfig`, `loadSharedReportReadConfig`, `verifyRegistryPin`; retain existing per-feed config for the legacy profile. |
 | `src/lib/poll.ts` | Accept an explicitly advertised per-feed fixed target | `pollObserverOnce` gains a target argument; existing feed verifier stays one responsibility. |
-| `src/lib/store.ts`, `schema-v4.sql`, `schema-fingerprint.sql` | Registry staging, feed discovery and aggregate report persistence | `stageRegistryPage`, `acceptRegistryTarget`, `listAdvertisedFeeds`, `publishAggregateCoverage`; follow current schema upgrade/fingerprint pattern. |
-| `src/app/api/poll/route.ts` | Shared cron orchestration | Fetch registry, then bounded round-robin feeds; never call 1Bridge from a DB transaction. |
-| `src/app/api/reports/latest/route.ts`, a feed-status proof route | Public signed aggregate, feed-status proofs and per-feed reports | Explicit report scope in response; do not imply full verification when pending. |
-| `test/registry-source.test.ts`, `test/registry-poll.integration.test.ts`, `test/shared-cron.integration.test.ts` | Adversarial source and real Postgres resume/fencing checks | Consume the frozen authority fixture without regenerating expected values. |
+| `src/lib/registry-store.ts`, `src/lib/aggregate-store.ts`, `schema-v4.sql` | Registry staging, feed discovery and aggregate report persistence | `stageRegistryEntries`, `acceptRegistryTarget`, `readRegistryFeeds`, `publishAggregateCoverage`; use current schema upgrade/fingerprint pattern. |
+| `src/app/api/shared-poll/route.ts` | Shared cron orchestration | Fetch registry, then bounded round-robin feeds; never call 1Bridge from a DB transaction. |
+| `src/app/api/shared-reports/latest/route.ts`, `src/app/api/shared-reports/status/route.ts` | Public signed aggregate and feed-status proofs | Explicit report scope; do not imply full verification when pending. |
+| `test/registry-source.test.ts`, `test/registry-poll.integration.test.ts`, `test/shared-route.integration.test.ts` | Adversarial source and real Postgres resume/fencing checks | Consume the frozen authority fixture without regenerating expected values. |
 
 ## Tasks and gates
 

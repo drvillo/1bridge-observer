@@ -1,10 +1,14 @@
 import {
   authorityStateSnapshot,
   decodeBase64Url,
+  importSigningPublicKey,
   parseCanonical,
+  registryCheckpointHash,
   verifyAuthorityAnchor,
+  verifyRegistryCheckpoint,
   type AuthoritySnapshot,
   type SignedAuthorityAnchor,
+  type SignedRegistryCheckpoint,
 } from '@drvillo/1bridge-authority'
 
 export interface ObserverConfig {
@@ -19,6 +23,18 @@ export interface ObserverConfig {
 
 export type ReportReadConfig = Pick<ObserverConfig,
   'feedId' | 'anchorPin' | 'databaseUrl' | 'databaseSchema'>
+
+export interface SharedReportReadConfig {
+  databaseUrl: string
+  databaseSchema: string
+  publisherPublicKeySpki: string
+  signedGenesisEncoded: string
+}
+
+export interface SharedObserverConfig extends SharedReportReadConfig {
+  sourceBaseUrl: string
+  cronSecret: string
+}
 
 type Environment = Record<string, string | undefined>
 
@@ -56,6 +72,10 @@ export function loadReportReadConfig(env: Environment): ReportReadConfig {
     throw new Error('Invalid ANCHOR_PIN')
   }
 
+  return { feedId, anchorPin, ...loadDatabaseConfig(env) }
+}
+
+function loadDatabaseConfig(env: Environment): Pick<ObserverConfig, 'databaseUrl' | 'databaseSchema'> {
   const databaseUrl = env.DATABASE_URL
   if (!databaseUrl) {
     throw new Error('Invalid DATABASE_URL')
@@ -81,7 +101,40 @@ export function loadReportReadConfig(env: Environment): ReportReadConfig {
     throw new Error('Invalid OBSERVER_SCHEMA')
   }
 
-  return { feedId, anchorPin, databaseUrl, databaseSchema }
+  return { databaseUrl, databaseSchema }
+}
+
+/** Shared deployments pin one publisher and signed empty checkpoint, not customer feeds. */
+export function loadSharedObserverConfig(env: Environment): SharedObserverConfig {
+  const sourceBaseUrl = parseSourceUrl(env.SOURCE_BASE_URL, env.NODE_ENV)
+  const report = loadSharedReportReadConfig(env)
+  const cronSecret = env.CRON_SECRET
+  if (!cronSecret || Buffer.byteLength(cronSecret, 'utf8') < 32) throw new Error('Invalid CRON_SECRET')
+  return { sourceBaseUrl, ...report, cronSecret }
+}
+
+export function loadSharedReportReadConfig(env: Environment): SharedReportReadConfig {
+  const database = loadDatabaseConfig(env)
+  const publisherPublicKeySpki = env.REGISTRY_PUBLISHER_PUBLIC_KEY
+  const signedGenesisEncoded = env.REGISTRY_SIGNED_GENESIS
+  if (!publisherPublicKeySpki || !signedGenesisEncoded) throw new Error('Missing registry trust pin')
+  try { decodeBase64Url(signedGenesisEncoded, 16_384) }
+  catch { throw new Error('Invalid REGISTRY_SIGNED_GENESIS') }
+  return { ...database, publisherPublicKeySpki,
+    signedGenesisEncoded }
+}
+
+export async function verifyRegistryPin(config: SharedReportReadConfig): Promise<{
+  publisherKey: CryptoKey; signedGenesis: SignedRegistryCheckpoint; genesisHash: string
+}> {
+  const publisherKey = await importSigningPublicKey(config.publisherPublicKeySpki)
+  const signedGenesis = parseCanonical(decodeBase64Url(config.signedGenesisEncoded, 16_384)) as unknown as SignedRegistryCheckpoint
+  if (signedGenesis.statement.size !== 0 || signedGenesis.statement.previous !== null
+    || !await verifyRegistryCheckpoint(signedGenesis, publisherKey)) {
+    throw new TypeError('Invalid independently pinned registry genesis')
+  }
+  return { publisherKey, signedGenesis,
+    genesisHash: await registryCheckpointHash(signedGenesis.statement) }
 }
 
 export async function verifyObserverAnchor(config: ObserverConfig): Promise<AuthoritySnapshot> {

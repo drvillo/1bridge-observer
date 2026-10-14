@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
-    { "path": "/api/poll", "schedule": "0 8 * * *" }
+    { "path": "/api/shared-poll", "schedule": "0 8 * * *" }
   ]
 }

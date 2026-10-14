@@ -54,7 +54,7 @@ function connectionFor(store: ObserverStore): StoreConnection {
   return connection
 }
 
-async function transaction<T>(store: ObserverStore, work: (client: PoolClient) => Promise<T>): Promise<T> {
+export async function transaction<T>(store: ObserverStore, work: (client: PoolClient) => Promise<T>): Promise<T> {
   const { pool, schema } = connectionFor(store)
   const client = await pool.connect()
   let destroy = false
@@ -200,10 +200,12 @@ export async function installObserverSchema(store: ObserverStore): Promise<void>
   const v1 = readFileSync(new URL('../../schema.sql', import.meta.url), 'utf8')
   const v2 = readFileSync(new URL('../../schema-v2.sql', import.meta.url), 'utf8')
   const v3 = readFileSync(new URL('../../schema-v3.sql', import.meta.url), 'utf8')
+  const v4 = readFileSync(new URL('../../schema-v4.sql', import.meta.url), 'utf8')
   const fingerprintSql = readFileSync(new URL('../../schema-fingerprint.sql', import.meta.url), 'utf8')
   const v1Digest = createHash('sha256').update(v1).digest('hex')
   const v2Digest = createHash('sha256').update(v2).digest('hex')
   const v3Digest = createHash('sha256').update(v3).digest('hex')
+  const v4Digest = createHash('sha256').update(v4).digest('hex')
   await transaction(store, async client => {
     await client.query('SELECT pg_advisory_xact_lock(6704462056185601401)')
     const marker = await client.query<{ exists: boolean }>(
@@ -214,7 +216,7 @@ export async function installObserverSchema(store: ObserverStore): Promise<void>
         'SELECT version, catalog_fingerprint FROM observer_schema_versions')
       if (current.rows.length !== 1) throw new TypeError('Invalid observer schema marker')
       version = current.rows[0]!.version
-      if (version !== 1 && version !== 2 && version !== 3) throw new TypeError('Unsupported observer schema marker')
+      if (version !== 1 && version !== 2 && version !== 3 && version !== 4) throw new TypeError('Unsupported observer schema marker')
       const actual = await client.query<{ catalog_fingerprint: string }>(fingerprintSql)
       if (actual.rows.length !== 1
         || actual.rows[0]!.catalog_fingerprint !== current.rows[0]!.catalog_fingerprint) {
@@ -230,9 +232,14 @@ export async function installObserverSchema(store: ObserverStore): Promise<void>
       await client.query("SELECT set_config('observer.schema_digest', $1, true)", [v2Digest])
       await client.query(v2)
     }
-    await client.query("SELECT set_config('observer.previous_schema_digest', $1, true)", [v2Digest])
-    await client.query("SELECT set_config('observer.schema_digest', $1, true)", [v3Digest])
-    await client.query(v3)
+    if (version === null || version <= 3) {
+      await client.query("SELECT set_config('observer.previous_schema_digest', $1, true)", [v2Digest])
+      await client.query("SELECT set_config('observer.schema_digest', $1, true)", [v3Digest])
+      await client.query(v3)
+    }
+    await client.query("SELECT set_config('observer.previous_schema_digest', $1, true)", [v3Digest])
+    await client.query("SELECT set_config('observer.schema_digest', $1, true)", [v4Digest])
+    await client.query(v4)
   })
 }
 
@@ -670,6 +677,49 @@ async function replayAcceptedPrefix(anchor: SignedAuthorityAnchor, pin: string,
   }
   if (consumed !== leaves.length) throw new TypeError('Unsealed accepted leaf tail')
   return session
+}
+
+/** Returns only a completely replayed accepted feed head for aggregate coverage. */
+export async function readAcceptedObserverReplay(store: ObserverStore,
+  feedId: string): Promise<GovernanceReplaySnapshot | null> {
+  if (!HASH.test(feedId)) throw new TypeError('Invalid observer feed ID')
+  const material = await transaction(store, async client => {
+    const cursor = await client.query<{ accepted_size: string; accepted_checkpoint_hash: string | null }>(
+      'SELECT accepted_size, accepted_checkpoint_hash FROM observer_cursors WHERE feed_id=$1 FOR SHARE', [feedId])
+    const state = cursor.rows[0]
+    if (!state) return null
+    if (!state.accepted_checkpoint_hash) return null
+    const feed = await client.query<{ anchor_pin: string; signed_anchor: Buffer }>(
+      'SELECT anchor_pin, signed_anchor FROM observer_feeds WHERE feed_id=$1', [feedId])
+    if (feed.rows.length !== 1) throw new TypeError('Accepted observer feed is missing')
+    const leaves = await client.query<{ leaf_index: string; leaf_bytes: Buffer }>(
+      'SELECT leaf_index, leaf_bytes FROM observer_leaves WHERE feed_id=$1 ORDER BY leaf_index', [feedId])
+    const checkpoints = await client.query<{ position: string; statement_hash: string; signed_checkpoint: Buffer }>(
+      'SELECT position, statement_hash, signed_checkpoint FROM observer_checkpoints WHERE feed_id=$1 ORDER BY position',
+      [feedId])
+    const size = safeCount(state.accepted_size)
+    if (size > 10_000 || leaves.rows.length !== size
+      || leaves.rows.some((row, index) => safeCount(row.leaf_index) !== index)
+      || checkpoints.rows.length < 1 || checkpoints.rows.length > 10_001
+      || checkpoints.rows.some((row, index) => safeCount(row.position) !== index)
+      || checkpoints.rows.at(-1)?.statement_hash !== state.accepted_checkpoint_hash) {
+      throw new TypeError('Accepted observer evidence is incomplete')
+    }
+    return { pin: feed.rows[0]!.anchor_pin,
+      anchor: parseCanonical(feed.rows[0]!.signed_anchor) as unknown as SignedAuthorityAnchor,
+      leaves: leaves.rows.map(row => new Uint8Array(row.leaf_bytes)),
+      checkpoints: checkpoints.rows.map(row => parseCanonical(row.signed_checkpoint) as unknown as SignedCheckpoint),
+      size, hash: state.accepted_checkpoint_hash }
+  })
+  if (!material) return null
+  const replay = await replayAcceptedPrefix(material.anchor, material.pin,
+    material.leaves, material.checkpoints)
+  const snapshot = replay.snapshot()
+  if (snapshot.feedId !== feedId || snapshot.size !== material.size
+    || snapshot.checkpointHash !== material.hash) {
+    throw new TypeError('Accepted observer replay differs from stored head')
+  }
+  return snapshot
 }
 
 /** Replays the accepted prefix from customer-owned bytes and retains one signed report per evidence revision. */

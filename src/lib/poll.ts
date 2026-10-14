@@ -1,6 +1,6 @@
 import { canonicalBytes, encodeBase64Url, type GovernanceReplaySnapshot } from '@drvillo/1bridge-authority'
 import type { ObserverConfig } from './config'
-import { discoverFeedHead, fetchCheckpointPage, fetchLeafPage,
+import { discoverFeedHead, fetchCheckpointPage, fetchLeafPage, type ProvisionalFeedHead,
   SourceHttpError, SourceProtocolError, SourceTransportError } from './source'
 import { acceptObserverTarget, beginObserverTarget, claimObserverLease,
   quarantineObserverTarget, readObserverProgress, recordObserverFinding, registerObserverFeed,
@@ -33,7 +33,7 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
 
 /** Advances at most one fixed target by bounded HTTP pages, retaining every staged step. */
 export async function pollObserverOnce(store: ObserverStore, config: ObserverConfig,
-  workerId: string, budget: PollBudget): Promise<PollResult> {
+  workerId: string, budget: PollBudget, fixedTarget?: ProvisionalFeedHead): Promise<PollResult> {
   validBudget(budget)
   const deadline = Date.now() + budget.maxMs
   await registerObserverFeed(store, config)
@@ -52,7 +52,7 @@ export async function pollObserverOnce(store: ObserverStore, config: ObserverCon
     try {
       if (!target) {
         if (Date.now() >= deadline) return { status: 'pending' }
-        target = await discoverFeedHead(config, requestOptions())
+        target = fixedTarget ?? await discoverFeedHead(config, requestOptions())
         if (target.checkpointHash === progress.acceptedHash) {
           if (!progress.acceptedCheckpointBytes
             || !equalBytes(target.signedCheckpointBytes, progress.acceptedCheckpointBytes)) {

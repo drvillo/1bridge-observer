@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import pg from 'pg'
 import * as authority from '@drvillo/1bridge-authority'
 import { pollObserverOnce } from '../src/lib/poll'
-import { installObserverSchema, openObserverStore } from '../src/lib/store'
+import { installObserverSchema, openObserverStore, readAcceptedObserverReplay } from '../src/lib/store'
 import type { ObserverConfig } from '../src/lib/config'
 import { buildGovernanceSource, startGovernanceSource, type GovernanceSourceHistory,
   type GovernanceSourceFaults } from './governance-source-fixture'
@@ -53,6 +53,26 @@ describe('durable bounded source poll', () => {
       expect(again).toMatchObject({ status: 'up_to_date' })
       expect((await inspector.query('SELECT version FROM observer_poll.observer_cursors')).rows[0].version)
         .toBe(accepted.rows[0].version)
+    } finally { await store.close(); await source.close() }
+  })
+
+  it('uses an explicitly advertised target without discovering mutable feed head', async () => {
+    const history = await buildGovernanceSource()
+    const source = await startGovernanceSource(history)
+    const store = openObserverStore(databaseUrl, 'observer_fixed_target')
+    try {
+      await installObserverSchema(store)
+      const signedCheckpoint = history.checkpoints.at(-1)!
+      const fixed = { provisional: true as const, signedCheckpoint,
+        checkpointHash: await authority.checkpointHash(signedCheckpoint.statement),
+        signedCheckpointBytes: authority.canonicalBytes(signedCheckpoint) }
+      const settings = { ...config(history, source.baseUrl), databaseSchema: 'observer_fixed_target' }
+      expect(await pollObserverOnce(store, settings, 'fixed',
+        { maxLeafPages: 16, maxCheckpoints: 16, maxMs: 20_000 }, fixed))
+        .toMatchObject({ status: 'accepted', snapshot: { checkpointHash: fixed.checkpointHash } })
+      expect(await readAcceptedObserverReplay(store, settings.feedId))
+        .toMatchObject({ checkpointHash: fixed.checkpointHash, size: history.leaves.length })
+      expect(source.calls.some(url => url.pathname.endsWith('/head'))).toBe(false)
     } finally { await store.close(); await source.close() }
   })
 
