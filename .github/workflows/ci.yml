@@ -22,6 +22,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Test
         run: pnpm test
+      - name: Test Postgres schema
+        run: bash test/schema.sql.test.sh
       - name: Lint
         run: pnpm lint
       - name: Typecheck

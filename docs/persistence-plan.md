@@ -2,6 +2,10 @@
 
 > This is a reviewed-before-code increment under the Superpowers test-driven workflow. It builds storage only. Until a source puller and authority replay invoke it, the observer makes no coverage claim.
 
+**DDL status (2026-10-14):** Root `schema.sql` now defines the initial nine observer-owned tables, their foreign keys/checks/indexes, a version-1 marker, and an installation collision guard. It must execute on one client inside a caller-owned transaction after `SET LOCAL observer.schema_digest` to the lowercase SHA-256 of the exact file; the transaction-scoped advisory lock serializes installers. `test/schema.sql.test.sh` exercises fresh/repeated installation, selected-schema search-path isolation, invalid data, digest mismatch, object collision, and rollback in a disposable Postgres 17 container. The store installer, full catalog-shape validation on repeat, runtime byte-for-byte immutability and cursor-tail consistency checks, local Supabase check, and all polling/coverage logic remain unimplemented. No observer runtime persistence or verified coverage is claimed.
+
+The initial DDL uses one database identity sequence for target attempt IDs; `(feed_id, attempt_id)` is the composite row identity. The planned store must not assume the numeric sequence restarts for each feed.
+
 **Goal:** Retain exact pulled evidence, a resumable cursor, leases and unresolved findings in customer-owned Postgres with crash-safe, competing-worker behavior. The same SQL must work against ordinary Postgres and a customer Supabase Postgres connection.
 
 ## Ground truth
