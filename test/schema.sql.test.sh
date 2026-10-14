@@ -59,6 +59,24 @@ if install_schema index_drift >/dev/null 2>&1; then
   exit 1
 fi
 
+# A retained marker cannot make an altered table look like the declared schema.
+printf 'CREATE DATABASE column_drift;\n' | sql >/dev/null
+install_schema column_drift >/dev/null
+printf 'ALTER TABLE observer_feeds ADD COLUMN unreviewed_text text;\n' | sql column_drift >/dev/null
+if install_schema column_drift >/dev/null 2>&1; then
+  echo 'Expected changed observer columns to block repeated installation' >&2
+  exit 1
+fi
+
+printf 'CREATE DATABASE constraint_drift;\n' | sql >/dev/null
+install_schema constraint_drift >/dev/null
+constraint_name=$(printf "SELECT conname FROM pg_constraint WHERE conrelid='observer_feeds'::regclass AND contype='c' ORDER BY conname LIMIT 1;\n" | sql constraint_drift)
+printf 'ALTER TABLE observer_feeds DROP CONSTRAINT %s;\n' "$constraint_name" | sql constraint_drift >/dev/null
+if install_schema constraint_drift >/dev/null 2>&1; then
+  echo 'Expected removed observer constraint to block repeated installation' >&2
+  exit 1
+fi
+
 # A public marker must not be mistaken for a fresh customer-selected schema.
 printf 'CREATE SCHEMA observer_tenant;\n' | sql >/dev/null
 install_schema postgres observer_tenant >/dev/null
@@ -141,4 +159,4 @@ if install_schema >/dev/null 2>&1; then
   exit 1
 fi
 
-echo 'observer schema: fresh/repeat install, marker, constraints, FK, indexes and transactional rollback passed'
+echo 'observer schema: fresh/repeat install, marker, catalog drift, constraints, FK and transactional rollback passed'

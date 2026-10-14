@@ -44,26 +44,6 @@ BEGIN
     IF table_count <> 9 THEN
       RAISE EXCEPTION 'Incomplete observer schema';
     END IF;
-    IF NOT EXISTS (
-      SELECT 1
-      FROM pg_class AS index_object
-      JOIN pg_namespace AS namespace ON namespace.oid = index_object.relnamespace
-      JOIN pg_index AS index_entry ON index_entry.indexrelid = index_object.oid
-      JOIN pg_class AS indexed_table ON indexed_table.oid = index_entry.indrelid
-      JOIN pg_attribute AS feed_column
-        ON feed_column.attrelid = indexed_table.oid AND feed_column.attname = 'feed_id'
-      JOIN pg_am AS access_method ON access_method.oid = index_object.relam
-      WHERE namespace.nspname = current_schema()
-        AND index_object.relname = 'observer_targets_one_active_idx'
-        AND indexed_table.relname = 'observer_targets'
-        AND access_method.amname = 'btree'
-        AND index_entry.indisunique
-        AND index_entry.indnkeyatts = 1
-        AND index_entry.indkey[0] = feed_column.attnum
-        AND pg_get_expr(index_entry.indpred, index_entry.indrelid) = '(status = ''active''::text)'
-    ) THEN
-      RAISE EXCEPTION 'Observer active-target index has changed';
-    END IF;
   END IF;
 END;
 $observer_install$;
@@ -71,6 +51,7 @@ $observer_install$;
 CREATE TABLE IF NOT EXISTS observer_schema_versions (
   version integer PRIMARY KEY CHECK (version = 1),
   schema_digest text NOT NULL CHECK (schema_digest ~ '^[0-9a-f]{64}$'),
+  catalog_fingerprint text NOT NULL CHECK (catalog_fingerprint ~ '^[0-9a-f]{32}$'),
   installed_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 
@@ -186,5 +167,93 @@ CREATE TABLE IF NOT EXISTS observer_findings (
 CREATE INDEX IF NOT EXISTS observer_findings_unresolved_idx
   ON observer_findings(feed_id, first_seen_at) WHERE resolved_at IS NULL;
 
-INSERT INTO observer_schema_versions(version, schema_digest)
-  VALUES (1, current_setting('observer.schema_digest')) ON CONFLICT (version) DO NOTHING;
+-- This fingerprint detects accidental DDL drift inside the observer-owned schema.
+-- It is not an adversarial integrity seal against a database administrator.
+DO $observer_catalog$
+DECLARE
+  actual_fingerprint text;
+  stored_fingerprint text;
+BEGIN
+  SELECT md5(jsonb_build_object(
+    'objects', (
+      SELECT jsonb_agg(jsonb_build_array(object.relname, object.relkind,
+        object.relpersistence, object.relrowsecurity, object.relforcerowsecurity)
+        ORDER BY object.relname)
+      FROM pg_class AS object
+      JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
+      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+    ),
+    'columns', (
+      SELECT jsonb_agg(jsonb_build_array(object.relname, column_entry.attnum,
+        column_entry.attname, format_type(column_entry.atttypid, column_entry.atttypmod),
+        column_entry.attnotnull, column_entry.attidentity, column_entry.attgenerated,
+        pg_get_expr(default_entry.adbin, default_entry.adrelid))
+        ORDER BY object.relname, column_entry.attnum)
+      FROM pg_class AS object
+      JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
+      JOIN pg_attribute AS column_entry ON column_entry.attrelid = object.oid
+      LEFT JOIN pg_attrdef AS default_entry
+        ON default_entry.adrelid = object.oid AND default_entry.adnum = column_entry.attnum
+      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+        AND object.relkind IN ('r', 'p') AND column_entry.attnum > 0
+        AND NOT column_entry.attisdropped
+    ),
+    'constraints', (
+      SELECT jsonb_agg(jsonb_build_array(object.relname, constraint_entry.conname,
+        constraint_entry.contype, pg_get_constraintdef(constraint_entry.oid, true))
+        ORDER BY object.relname, constraint_entry.conname)
+      FROM pg_constraint AS constraint_entry
+      JOIN pg_class AS object ON object.oid = constraint_entry.conrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
+      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+    ),
+    'indexes', (
+      SELECT jsonb_agg(jsonb_build_array(object.relname, index_object.relname,
+        pg_get_indexdef(index_entry.indexrelid)) ORDER BY object.relname, index_object.relname)
+      FROM pg_index AS index_entry
+      JOIN pg_class AS object ON object.oid = index_entry.indrelid
+      JOIN pg_class AS index_object ON index_object.oid = index_entry.indexrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
+      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+    ),
+    'triggers', (
+      SELECT jsonb_agg(jsonb_build_array(object.relname, trigger_entry.tgname,
+        pg_get_triggerdef(trigger_entry.oid)) ORDER BY object.relname, trigger_entry.tgname)
+      FROM pg_trigger AS trigger_entry
+      JOIN pg_class AS object ON object.oid = trigger_entry.tgrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
+      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+        AND NOT trigger_entry.tgisinternal
+    ),
+    'policies', (
+      SELECT jsonb_agg(jsonb_build_array(object.relname, policy_entry.polname,
+        policy_entry.polcmd, policy_entry.polpermissive,
+        pg_get_expr(policy_entry.polqual, policy_entry.polrelid),
+        pg_get_expr(policy_entry.polwithcheck, policy_entry.polrelid))
+        ORDER BY object.relname, policy_entry.polname)
+      FROM pg_policy AS policy_entry
+      JOIN pg_class AS object ON object.oid = policy_entry.polrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
+      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+    ),
+    'sequences', (
+      SELECT jsonb_agg(jsonb_build_array(object.relname, sequence_entry.seqtypid::regtype::text,
+        sequence_entry.seqstart, sequence_entry.seqincrement, sequence_entry.seqmax,
+        sequence_entry.seqmin, sequence_entry.seqcache, sequence_entry.seqcycle)
+        ORDER BY object.relname)
+      FROM pg_sequence AS sequence_entry
+      JOIN pg_class AS object ON object.oid = sequence_entry.seqrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
+      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+    )
+  )::text) INTO actual_fingerprint;
+
+  INSERT INTO observer_schema_versions(version, schema_digest, catalog_fingerprint)
+    VALUES (1, current_setting('observer.schema_digest'), actual_fingerprint)
+    ON CONFLICT (version) DO NOTHING;
+  SELECT catalog_fingerprint INTO stored_fingerprint FROM observer_schema_versions WHERE version = 1;
+  IF stored_fingerprint IS DISTINCT FROM actual_fingerprint THEN
+    RAISE EXCEPTION 'Observer schema catalog has changed';
+  END IF;
+END;
+$observer_catalog$;
