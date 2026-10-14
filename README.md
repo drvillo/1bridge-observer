@@ -2,7 +2,7 @@
 
 This public TypeScript/Next.js service independently **pulls** a signed pseudonymous governance registry and its advertised feed evidence from 1Bridge. It keeps accepted prefixes in observer-owned Postgres, replays authority and action signatures with [the authority library](https://github.com/drvillo/1bridge-authority), and signs aggregate reports distinguishing verified from pending feeds. It never gates a 1Bridge operation or release. A later published signed action citing a witnessed predecessor exposes a suppressed gap during catch-up. An event hidden from every independent witness and receipt holder cannot be inferred.
 
-The shared deployment takes **no per-customer ID, token, source URL or feed list**. One third-party operator deploys it for all plans. Customer-operated Enterprise observers are a future deployment profile. The source must publish pseudonymous verification envelopes without private payloads. Production 1Bridge source endpoints are not yet implemented; this repository does not currently establish live 1Bridge coverage.
+The shared deployment takes **no per-customer ID, token, source URL or feed list**. One third-party operator deploys it for all plans. Customer-operated Enterprise observers are a future deployment profile. The source must publish pseudonymous verification envelopes without private payloads. Configure `SOURCE_BASE_URL` for a deployed source with the public registry and feed routes before claiming coverage. This repository's tests prove the HTTP contract with a local source and independent Postgres; they do not establish live 1Bridge coverage.
 
 ## Deploy the shared profile
 
@@ -30,6 +30,6 @@ The database retains accepted and staged global registry entries/checkpoints, so
 
 The legacy `GET /api/poll` and token-protected `GET /api/reports/latest` routes remain for a separately configured single-feed installation; they are not the Vercel shared cron. The legacy profile uses `FEED_ID`, `ANCHOR_PIN`, `SIGNED_ANCHOR`, and `REPORT_READ_TOKEN`. It retains externally supplied completion receipts programmatically for independent comparison, but there is no public receipt-ingress route. Do not treat that archive as proof that all customers submitted receipts.
 
-The authority dependency is pinned in `package.json` to a reviewed Git commit. `pnpm-workspace.yaml` permits only that dependency's Git `prepare` build. The v1–v3 migrations remain frozen; `schema-v4.sql` adds shared registry and aggregate tables. `bash test/schema.sql.test.sh` checks the v1 DDL in disposable Postgres. Fresh/v1/v2 upgrades and shared workflows are covered by `pnpm test:integration`. Optional Supabase scripts run against a separately supplied disposable Supabase Postgres database.
+The authority dependency is pinned in `package.json` to a reviewed Git commit. `pnpm-workspace.yaml` permits only that dependency's Git `prepare` build. The v1–v3 migrations remain frozen; `schema-v4.sql` adds shared registry and aggregate tables. `bash test/schema.sql.test.sh` checks the v1 DDL in disposable Postgres. Fresh/v1/v2 upgrades and shared workflows are covered by `pnpm test:integration`, including a loopback HTTP source with two feeds, bounded catch-up, outage recovery and a missing-checkpoint finding. Optional Supabase scripts run against a separately supplied disposable Supabase Postgres database.
 
 License: MIT.
