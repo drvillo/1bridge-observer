@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import pg from 'pg'
 import * as authority from '@drvillo/1bridge-authority'
-import { beginObserverTarget, claimObserverLease, installObserverSchema, openObserverStore, registerObserverFeed,
+import { acceptObserverTarget, beginObserverTarget, claimObserverLease, installObserverSchema, openObserverStore,
+  quarantineObserverTarget, registerObserverFeed,
   stageObserverBatch,
   type ObserverStore } from '../src/lib/store'
 import type { ObserverConfig } from '../src/lib/config'
@@ -144,6 +145,7 @@ describe('durable observer store', () => {
     expect((await inspector.query('SELECT count(*) AS total FROM observer_test.observer_staged_leaves')).rows[0].total).toBe('0')
     const first = await stageObserverBatch(store, active, firstBatch)
     expect(first).toMatchObject({ alreadyApplied: false, claim: { version: 2, attemptId: active.attemptId } })
+    await expect(acceptObserverTarget(store, first.claim)).rejects.toThrow(/incomplete/i)
     const afterFirst = await inspector.query(
       'SELECT staged_next_index, accepted_size, staged_checkpoint_tail_position FROM observer_test.observer_cursors')
     expect(afterFirst.rows).toEqual([{ staged_next_index: '3', accepted_size: '0', staged_checkpoint_tail_position: '3' }])
@@ -169,5 +171,54 @@ describe('durable observer store', () => {
     const checkpointOnly = { start: 7, leaves: [], checkpoints: await checkpointItems(7, 8) }
     await expect(stageObserverBatch(store, second.claim, checkpointOnly)).resolves.toMatchObject({ alreadyApplied: true })
     expect((await inspector.query('SELECT version FROM observer_test.observer_cursors')).rows[0].version).toBe('3')
+    await expect(quarantineObserverTarget(store, second.claim)).rejects.toThrow(/cannot be quarantined/i)
+    const accepted = await acceptObserverTarget(store, second.claim)
+    expect(accepted).toEqual(vector.expected)
+    const acceptedCursor = await inspector.query(
+      'SELECT staged_next_index, accepted_size, accepted_checkpoint_hash, active_attempt_id, version FROM observer_test.observer_cursors')
+    expect(acceptedCursor.rows).toEqual([{ staged_next_index: '7', accepted_size: '7',
+      accepted_checkpoint_hash: target.checkpointHash, active_attempt_id: null, version: '4' }])
+    expect((await inspector.query('SELECT count(*) AS total FROM observer_test.observer_leaves')).rows[0].total).toBe('7')
+    expect((await inspector.query('SELECT count(*) AS total FROM observer_test.observer_checkpoints')).rows[0].total).toBe('8')
+    expect((await inspector.query('SELECT status FROM observer_test.observer_targets')).rows[0].status).toBe('accepted')
+    await expect(acceptObserverTarget(store, second.claim)).rejects.toThrow(/stale/i)
+  })
+
+  it('does not accept retained source bytes that fail cryptographic replay', async () => {
+    const badStore = openObserverStore(databaseUrl, 'observer_parallel')
+    try {
+      await installObserverSchema(badStore)
+      await registerObserverFeed(badStore, config)
+      const lease = await claimObserverLease(badStore, config.feedId, 'bad-source-worker', 30_000)
+      const target = await beginObserverTarget(badStore, lease!, await finalTarget())
+      const leaves = vector.leaves.map(item => authority.decodeBase64Url(item))
+      leaves[0] = leaves[1]!
+      const staged = await stageObserverBatch(badStore, target,
+        { start: 0, leaves, checkpoints: await checkpointItems(0, 8) })
+      await expect(acceptObserverTarget(badStore, staged.claim)).rejects.toThrow()
+      const cursor = await inspector.query(
+        'SELECT accepted_size, active_attempt_id FROM observer_parallel.observer_cursors')
+      expect(cursor.rows).toEqual([{ accepted_size: '0', active_attempt_id: String(target.attemptId) }])
+      expect((await inspector.query('SELECT count(*) AS total FROM observer_parallel.observer_leaves')).rows[0].total).toBe('0')
+      expect((await inspector.query('SELECT status FROM observer_parallel.observer_targets')).rows[0].status).toBe('active')
+      const finding = await quarantineObserverTarget(badStore, staged.claim)
+      expect(Number.isSafeInteger(finding) && finding > 0).toBe(true)
+      const quarantined = await inspector.query(
+        'SELECT accepted_size, staged_next_index, active_attempt_id FROM observer_parallel.observer_cursors')
+      expect(quarantined.rows).toEqual([{ accepted_size: '0', staged_next_index: '0', active_attempt_id: null }])
+      expect((await inspector.query('SELECT status FROM observer_parallel.observer_targets')).rows[0].status).toBe('quarantined')
+      const findings = await inspector.query(
+        'SELECT finding_id, finding_type, resolved_at FROM observer_parallel.observer_findings')
+      expect(findings.rows).toEqual([{ finding_id: String(finding), finding_type: 'invalid_replay', resolved_at: null }])
+      expect((await inspector.query('SELECT count(*) AS total FROM observer_parallel.observer_staged_leaves')).rows[0].total).toBe('7')
+      const nextLease = await claimObserverLease(badStore, config.feedId, 'bad-source-worker', 30_000)
+      const retry = await beginObserverTarget(badStore, nextLease!, await finalTarget())
+      expect(retry.attemptId).not.toBe(target.attemptId)
+      const corrected = await stageObserverBatch(badStore, retry,
+        { start: 0, leaves: vector.leaves.map(item => authority.decodeBase64Url(item)),
+          checkpoints: await checkpointItems(0, 8) })
+      await expect(acceptObserverTarget(badStore, corrected.claim)).resolves.toEqual(vector.expected)
+      expect((await inspector.query('SELECT resolved_at FROM observer_parallel.observer_findings')).rows[0].resolved_at).toBeNull()
+    } finally { await badStore.close() }
   })
 })

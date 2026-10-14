@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import pg, { type PoolClient } from 'pg'
 import { canonicalBytes, checkpointHash, decodeBase64Url, hashLeaf, parseCanonical,
+  replayGovernanceHistory, type GovernanceReplaySnapshot, type SignedAuthorityAnchor,
   type SignedCheckpoint } from '@drvillo/1bridge-authority'
 import { verifyObserverAnchor, type ObserverConfig } from './config'
 import type { CheckpointPageItem, ProvisionalFeedHead } from './source'
@@ -380,5 +381,141 @@ export async function stageObserverBatch(store: ObserverStore, claim: ObserverTa
         stagedCheckpoints.length ? position : cursor.staged_checkpoint_tail_position])
     return { alreadyApplied: false, claim: { ...claim, version: claim.version + 1,
       expiresAt: new Date(cursor.lease_until) } }
+  })
+}
+
+interface RetainedReplayInput {
+  anchor: SignedAuthorityAnchor
+  pin: string
+  leaves: Uint8Array[]
+  checkpoints: SignedCheckpoint[]
+}
+
+async function retainedReplayInput(store: ObserverStore, claim: ObserverTargetLease): Promise<RetainedReplayInput> {
+  return transaction(store, async client => {
+    const cursor = await lockClaim(client, claim)
+    if (!Number.isSafeInteger(claim.attemptId) || claim.attemptId < 1
+      || cursor.active_attempt_id === null || safeCount(cursor.active_attempt_id) !== claim.attemptId
+      || safeCount(cursor.staged_next_index) !== claim.targetSize
+      || cursor.staged_checkpoint_tail_hash !== claim.targetHash) throw new TypeError('Observer target incomplete')
+    if (claim.targetSize > 10_000) throw new RangeError('Observer replay budget exceeded')
+    const targetResult = await client.query<{ target_hash: string; target_size: string;
+      signed_checkpoint: Buffer; status: string }>(
+      'SELECT target_hash, target_size, signed_checkpoint, status FROM observer_targets WHERE feed_id=$1 AND attempt_id=$2',
+      [claim.feedId, claim.attemptId])
+    const target = targetResult.rows[0]
+    if (!target || target.status !== 'active' || target.target_hash !== claim.targetHash
+      || safeCount(target.target_size) !== claim.targetSize) throw new TypeError('Observer target incomplete')
+    const feedResult = await client.query<{ anchor_pin: string; signed_anchor: Buffer }>(
+      'SELECT anchor_pin, signed_anchor FROM observer_feeds WHERE feed_id=$1', [claim.feedId])
+    const feed = feedResult.rows[0]
+    if (!feed) throw new TypeError('Observer feed is missing')
+    const acceptedSize = safeCount(cursor.accepted_size)
+    const acceptedLeaves = await client.query<{ leaf_index: string; leaf_bytes: Buffer }>(
+      'SELECT leaf_index, leaf_bytes FROM observer_leaves WHERE feed_id=$1 AND leaf_index < $2 ORDER BY leaf_index',
+      [claim.feedId, acceptedSize])
+    const stagedLeaves = await client.query<{ leaf_index: string; leaf_bytes: Buffer }>(
+      `SELECT leaf_index, leaf_bytes FROM observer_staged_leaves
+       WHERE feed_id=$1 AND attempt_id=$2 AND leaf_index >= $3 ORDER BY leaf_index`,
+      [claim.feedId, claim.attemptId, acceptedSize])
+    const leafRows = [...acceptedLeaves.rows, ...stagedLeaves.rows]
+    if (leafRows.length !== claim.targetSize || leafRows.some((row, index) => safeCount(row.leaf_index) !== index)) {
+      throw new TypeError('Observer target has an incomplete leaf prefix')
+    }
+    const acceptedCheckpoints = await client.query<{ position: string; statement_hash: string; signed_checkpoint: Buffer }>(
+      'SELECT position, statement_hash, signed_checkpoint FROM observer_checkpoints WHERE feed_id=$1 ORDER BY position',
+      [claim.feedId])
+    const stagedCheckpoints = await client.query<{ position: string; statement_hash: string; signed_checkpoint: Buffer }>(
+      `SELECT position, statement_hash, signed_checkpoint FROM observer_staged_checkpoints
+       WHERE feed_id=$1 AND attempt_id=$2 ORDER BY position`, [claim.feedId, claim.attemptId])
+    const checkpointRows = [...acceptedCheckpoints.rows, ...stagedCheckpoints.rows]
+    if (checkpointRows.length === 0 || checkpointRows.length > 10_001
+      || checkpointRows.some((row, index) => safeCount(row.position) !== index)
+      || checkpointRows.at(-1)?.statement_hash !== claim.targetHash
+      || !checkpointRows.at(-1)?.signed_checkpoint.equals(target.signed_checkpoint)) {
+      throw new TypeError('Observer target has an incomplete checkpoint chain')
+    }
+    let bytes = feed.signed_anchor.length
+    for (const row of leafRows) bytes += row.leaf_bytes.length
+    for (const row of checkpointRows) bytes += row.signed_checkpoint.length
+    if (bytes > 32 * 1024 * 1024) throw new RangeError('Observer replay budget exceeded')
+    return { anchor: parseCanonical(feed.signed_anchor) as unknown as SignedAuthorityAnchor,
+      pin: feed.anchor_pin, leaves: leafRows.map(row => new Uint8Array(row.leaf_bytes)),
+      checkpoints: checkpointRows.map(row => parseCanonical(row.signed_checkpoint) as unknown as SignedCheckpoint) }
+  })
+}
+
+/** Replays retained bytes under the independent pin, then atomically accepts the still-current target. */
+export async function acceptObserverTarget(store: ObserverStore, claim: ObserverTargetLease): Promise<GovernanceReplaySnapshot> {
+  const input = await retainedReplayInput(store, claim)
+  const verified = await replayGovernanceHistory(input.anchor, input.pin, input.leaves, input.checkpoints)
+  if (verified.feedId !== claim.feedId || verified.size !== claim.targetSize
+    || verified.checkpointHash !== claim.targetHash) throw new TypeError('Observer replay disagrees with target')
+  await transaction(store, async client => {
+    const cursor = await lockClaim(client, claim)
+    if (cursor.active_attempt_id === null || safeCount(cursor.active_attempt_id) !== claim.attemptId
+      || safeCount(cursor.staged_next_index) !== claim.targetSize
+      || cursor.staged_checkpoint_tail_hash !== claim.targetHash) throw new TypeError('Stale observer target claim')
+    if (safeCount(cursor.version) === Number.MAX_SAFE_INTEGER) throw new RangeError('Observer cursor version exhausted')
+    const target = await client.query<{ status: string }>(
+      'SELECT status FROM observer_targets WHERE feed_id=$1 AND attempt_id=$2', [claim.feedId, claim.attemptId])
+    if (target.rows[0]?.status !== 'active') throw new TypeError('Stale observer target claim')
+    const acceptedSize = safeCount(cursor.accepted_size)
+    await client.query(
+      `INSERT INTO observer_leaves(feed_id, leaf_index, leaf_hash, leaf_bytes)
+       SELECT feed_id, leaf_index, leaf_hash, leaf_bytes FROM observer_staged_leaves
+       WHERE feed_id=$1 AND attempt_id=$2 AND leaf_index >= $3 ORDER BY leaf_index`,
+      [claim.feedId, claim.attemptId, acceptedSize])
+    await client.query(
+      `INSERT INTO observer_checkpoints(feed_id, statement_hash, position, checkpoint_size, previous_hash, signed_checkpoint)
+       SELECT feed_id, statement_hash, position, checkpoint_size, previous_hash, signed_checkpoint
+       FROM observer_staged_checkpoints WHERE feed_id=$1 AND attempt_id=$2 ORDER BY position`,
+      [claim.feedId, claim.attemptId])
+    await client.query(
+      `UPDATE observer_targets SET status='accepted', finished_at=clock_timestamp()
+       WHERE feed_id=$1 AND attempt_id=$2`, [claim.feedId, claim.attemptId])
+    await client.query(
+      `UPDATE observer_cursors SET accepted_size=$2, accepted_checkpoint_hash=$3,
+         staged_next_index=$2, active_attempt_id=NULL, staged_checkpoint_tail_hash=NULL,
+         staged_checkpoint_tail_position=NULL, version=version+1 WHERE feed_id=$1`,
+      [claim.feedId, claim.targetSize, claim.targetHash])
+  })
+  return verified
+}
+
+/** Retains a complete replay-rejected attempt and releases its staging cursor for a new attempt. */
+export async function quarantineObserverTarget(store: ObserverStore, claim: ObserverTargetLease): Promise<number> {
+  const input = await retainedReplayInput(store, claim)
+  let rejected = false
+  try { await replayGovernanceHistory(input.anchor, input.pin, input.leaves, input.checkpoints) }
+  catch (error) {
+    if (!(error instanceof TypeError)) throw error
+    rejected = true
+  }
+  if (!rejected) throw new TypeError('Verified observer target cannot be quarantined')
+  const evidence = Buffer.from(canonicalBytes({ version: 1, kind: 'observer.replay_rejected',
+    feedId: claim.feedId, attemptId: claim.attemptId, targetHash: claim.targetHash,
+    targetSize: claim.targetSize }))
+  return transaction(store, async client => {
+    const cursor = await lockClaim(client, claim)
+    if (cursor.active_attempt_id === null || safeCount(cursor.active_attempt_id) !== claim.attemptId
+      || safeCount(cursor.staged_next_index) !== claim.targetSize
+      || cursor.staged_checkpoint_tail_hash !== claim.targetHash) throw new TypeError('Stale observer target claim')
+    if (safeCount(cursor.version) === Number.MAX_SAFE_INTEGER) throw new RangeError('Observer cursor version exhausted')
+    const target = await client.query<{ status: string }>(
+      'SELECT status FROM observer_targets WHERE feed_id=$1 AND attempt_id=$2', [claim.feedId, claim.attemptId])
+    if (target.rows[0]?.status !== 'active') throw new TypeError('Stale observer target claim')
+    const finding = await client.query<{ finding_id: string }>(
+      `INSERT INTO observer_findings(feed_id, attempt_id, finding_type, evidence_bytes)
+       VALUES($1,$2,'invalid_replay',$3) RETURNING finding_id`,
+      [claim.feedId, claim.attemptId, evidence])
+    await client.query(
+      `UPDATE observer_targets SET status='quarantined', finished_at=clock_timestamp()
+       WHERE feed_id=$1 AND attempt_id=$2`, [claim.feedId, claim.attemptId])
+    await client.query(
+      `UPDATE observer_cursors SET staged_next_index=accepted_size, active_attempt_id=NULL,
+         staged_checkpoint_tail_hash=NULL, staged_checkpoint_tail_position=NULL,
+         version=version+1 WHERE feed_id=$1`, [claim.feedId])
+    return safeCount(finding.rows[0]?.finding_id)
   })
 }
