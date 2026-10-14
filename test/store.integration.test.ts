@@ -43,15 +43,16 @@ describe('durable observer store', () => {
   beforeAll(() => { store = openObserverStore(config.databaseUrl, config.databaseSchema) })
   afterAll(async () => { await store.close(); await inspector.end() })
 
-  it('installs the report schema twice in the selected schema', async () => {
+  it('installs the receipt schema twice in the selected schema', async () => {
     await installObserverSchema(store)
     await installObserverSchema(store)
     const marker = await inspector.query('SELECT version, schema_digest, catalog_fingerprint FROM observer_test.observer_schema_versions')
     expect(marker.rows).toHaveLength(1)
-    expect(marker.rows[0]).toMatchObject({ version: 2 })
+    expect(marker.rows[0]).toMatchObject({ version: 3 })
     expect(marker.rows[0].schema_digest).toMatch(/^[0-9a-f]{64}$/)
     expect(marker.rows[0].catalog_fingerprint).toMatch(/^[0-9a-f]{32}$/)
     expect((await inspector.query("SELECT to_regclass('observer_test.observer_reports') IS NOT NULL AS installed")).rows[0].installed).toBe(true)
+    expect((await inspector.query("SELECT to_regclass('observer_test.observer_known_receipts') IS NOT NULL AS installed")).rows[0].installed).toBe(true)
     const outside = await inspector.query("SELECT to_regclass('public.observer_feeds') IS NULL AS untouched")
     expect(outside.rows[0].untouched).toBe(true)
   })
@@ -62,7 +63,7 @@ describe('durable observer store', () => {
     try {
       await Promise.all([installObserverSchema(first), installObserverSchema(second)])
       const result = await inspector.query('SELECT version FROM observer_parallel.observer_schema_versions')
-      expect(result.rows).toEqual([{ version: 2 }])
+      expect(result.rows).toEqual([{ version: 3 }])
     } finally { await Promise.all([first.close(), second.close()]) }
     const missing = openObserverStore(databaseUrl, 'observer_missing')
     try {
@@ -93,13 +94,48 @@ describe('durable observer store', () => {
       await inspector.query('CREATE INDEX observer_findings_unresolved_idx ON observer_upgrade.observer_findings(feed_id, first_seen_at) WHERE resolved_at IS NULL')
       await installObserverSchema(upgrade)
       await installObserverSchema(upgrade)
-      expect((await inspector.query('SELECT version FROM observer_upgrade.observer_schema_versions')).rows).toEqual([{ version: 2 }])
+      expect((await inspector.query('SELECT version FROM observer_upgrade.observer_schema_versions')).rows).toEqual([{ version: 3 }])
       expect((await inspector.query('SELECT feed_id FROM observer_upgrade.observer_feeds')).rows).toEqual([{ feed_id: feedId }])
       expect((await inspector.query("SELECT to_regclass('observer_upgrade.observer_reports') IS NOT NULL AS installed")).rows[0].installed).toBe(true)
       await inspector.query('ALTER TABLE observer_upgrade.observer_reports ADD COLUMN unreviewed_text text')
       await expect(installObserverSchema(upgrade)).rejects.toThrow(/catalog has changed/)
       await inspector.query('DROP TABLE observer_upgrade.observer_reports')
       await expect(installObserverSchema(upgrade)).rejects.toThrow(/catalog has changed|incomplete/i)
+    } finally { await upgrade.close() }
+  })
+
+  it('upgrades a populated v2 installation and detects changed receipt schema on repeat', async () => {
+    const v1 = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8')
+    const v2 = readFileSync(new URL('../schema-v2.sql', import.meta.url), 'utf8')
+    const v1Digest = createHash('sha256').update(v1).digest('hex')
+    const v2Digest = createHash('sha256').update(v2).digest('hex')
+    const client = await inspector.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query("SELECT set_config('search_path', 'observer_upgrade_v2', true)")
+      await client.query("SELECT set_config('observer.schema_digest', $1, true)", [v1Digest])
+      await client.query(v1)
+      await client.query("SELECT set_config('observer.previous_schema_digest', $1, true)", [v1Digest])
+      await client.query("SELECT set_config('observer.schema_digest', $1, true)", [v2Digest])
+      await client.query(v2)
+      await client.query('COMMIT')
+    } catch (error) { await client.query('ROLLBACK'); throw error }
+    finally { client.release() }
+    const feedId = 'f'.repeat(64)
+    await inspector.query("INSERT INTO observer_upgrade_v2.observer_feeds(feed_id, anchor_pin, signed_anchor, source_base_url) VALUES($1,$2,$3,$4)",
+      [feedId, 'e'.repeat(64), Buffer.from('anchor'), 'https://source.example'])
+    await inspector.query('INSERT INTO observer_upgrade_v2.observer_cursors(feed_id) VALUES($1)', [feedId])
+    const upgrade = openObserverStore(databaseUrl, 'observer_upgrade_v2')
+    try {
+      await installObserverSchema(upgrade)
+      await installObserverSchema(upgrade)
+      expect((await inspector.query('SELECT version FROM observer_upgrade_v2.observer_schema_versions')).rows)
+        .toEqual([{ version: 3 }])
+      expect((await inspector.query('SELECT feed_id FROM observer_upgrade_v2.observer_feeds')).rows)
+        .toEqual([{ feed_id: feedId }])
+      await inspector.query('DROP INDEX observer_upgrade_v2.observer_known_receipts_feed_index_idx')
+      await inspector.query('CREATE INDEX observer_known_receipts_feed_index_idx ON observer_upgrade_v2.observer_known_receipts(feed_id)')
+      await expect(installObserverSchema(upgrade)).rejects.toThrow(/catalog has changed/)
     } finally { await upgrade.close() }
   })
 
