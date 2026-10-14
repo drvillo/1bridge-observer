@@ -27,6 +27,15 @@ describe('loadObserverConfig', () => {
   })
 
   it.each([
+    'https://EVIDENCE.EXAMPLE/',
+    'https://evidence.example:443/',
+    'HTTPS://EVIDENCE.EXAMPLE:443/',
+  ])('normalizes a valid source origin: %s', (sourceBaseUrl) => {
+    expect(loadObserverConfig({ ...valid, SOURCE_BASE_URL: sourceBaseUrl }).sourceBaseUrl)
+      .toBe('https://evidence.example')
+  })
+
+  it.each([
     ['missing source', { SOURCE_BASE_URL: undefined }],
     ['malformed source', { SOURCE_BASE_URL: 'not a URL' }],
     ['HTTP in production', { SOURCE_BASE_URL: 'http://localhost:3100/' }],
@@ -35,6 +44,7 @@ describe('loadObserverConfig', () => {
     ['query', { SOURCE_BASE_URL: 'https://evidence.example/?key=private' }],
     ['fragment', { SOURCE_BASE_URL: 'https://evidence.example/#private' }],
     ['non-root path', { SOURCE_BASE_URL: 'https://evidence.example/feed' }],
+    ['normalized non-root path', { SOURCE_BASE_URL: 'https://evidence.example/feed/../' }],
     ['non-HTTP scheme', { SOURCE_BASE_URL: 'ftp://evidence.example/' }],
     ['uppercase feed', { FEED_ID: 'A'.repeat(64) }],
     ['short feed', { FEED_ID: 'a'.repeat(63) }],

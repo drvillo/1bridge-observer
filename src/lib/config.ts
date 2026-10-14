@@ -71,7 +71,8 @@ function parseSourceUrl(value: string | undefined, nodeEnv: string | undefined):
     url.password ||
     url.search ||
     url.hash ||
-    ![url.origin, `${url.origin}/`].includes(value ?? '')
+    url.pathname !== '/' ||
+    !/^https?:\/\/[^/?#\\]+\/?$/i.test(value ?? '')
   ) {
     throw new Error('Invalid SOURCE_BASE_URL')
   }
