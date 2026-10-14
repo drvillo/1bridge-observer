@@ -148,7 +148,8 @@ export interface GovernanceSourceFaults {
   unavailableLeaves?: boolean
 }
 
-export async function startGovernanceSource(history: GovernanceSourceHistory,
+export async function startGovernanceSource(history: Pick<GovernanceSourceHistory,
+  'signedAnchor' | 'leaves' | 'checkpoints' | 'alternateLastLeaf'>,
   candidate: authority.SignedCheckpoint = history.checkpoints.at(-1)!,
   pageCandidate: authority.SignedCheckpoint = candidate,
   faults: GovernanceSourceFaults = {}): Promise<GovernanceSourceServer> {

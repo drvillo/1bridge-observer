@@ -11,12 +11,14 @@ trap cleanup EXIT
 
 docker run --rm -d --name "$container" -e POSTGRES_PASSWORD=observer-test postgres:17 >/dev/null
 for _ in $(seq 1 60); do
-  if docker exec "$container" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+  # The image starts a temporary socket-only server during initialization.
+  # TCP readiness identifies the final server, so psql cannot race its shutdown.
+  if docker exec "$container" pg_isready -h 127.0.0.1 -U postgres -d postgres >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
-docker exec "$container" pg_isready -U postgres -d postgres >/dev/null
+docker exec "$container" pg_isready -h 127.0.0.1 -U postgres -d postgres >/dev/null
 
 sql() {
   docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -At -U postgres -d "${1:-postgres}"
