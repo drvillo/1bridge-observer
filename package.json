@@ -12,7 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@drvillo/1bridge-authority": "github:drvillo/1bridge-authority#9d672993347062a4ecaba2c197c798419160ac0a",
+    "@drvillo/1bridge-authority": "github:drvillo/1bridge-authority#fb583a867bbf23969c94361355dc97695795ec45",
     "next": "16.2.10",
     "react": "19.2.3",
     "react-dom": "19.2.3"
