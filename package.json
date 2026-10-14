@@ -13,7 +13,7 @@
     "test:integration": "bash test/store.integration.test.sh"
   },
   "dependencies": {
-    "@drvillo/1bridge-authority": "github:drvillo/1bridge-authority#be035716acd7ffa5fae46fd5196489cfcf47296c",
+    "@drvillo/1bridge-authority": "github:drvillo/1bridge-authority#f98a16064bdd0d3fc79c15da9c23e8e7c90fc029",
     "next": "16.2.10",
     "pg": "8.23.1",
     "react": "19.2.3",

@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "signedAnchor": {
+    "anchor": {
+      "version": 1,
+      "feedId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "workspaceId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "rootKeySpki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEg_ADNYt_HtQJUKcAN9tfJ3jJyVCWmJm9CElcrHwmt4jBBrTqnN3q1a5urxI_aZFChlxrlss6jQk-unpJKfdW0g",
+      "rootKeyId": "94cb34fc4f08d273fdf76f650933227c8f6d6bbe76adffd42d88b27dd2087531",
+      "recoveryKeySpki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE4GinKMCdvVZfy_bxHKWtm73x5MXbl8BGbPB6yomTQ8fcK8hW0MigZ9SuA0nu-qshMJna5ORGZeQttrgwsMwh6A",
+      "recoveryKeyId": "133737af84e86195db796065f6e034781da468979788ecbf25c50d8fa1e3e2c5",
+      "checkpointKeySpki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAELCY1iBG0bCPLaoTwsR6uWJ48YaA2xcOlEK2HBLm2sbqKUDNEcLeLO2sh20yyVM7guktl5HZo9_pFk8VoZPr9Yg",
+      "checkpointKeyId": "dd183f3cfd69b5165cf49983c0590f8cf42eb6e45ef50edbda24493ae4a3623c",
+      "authorityRoot": "084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5",
+      "policyEpoch": 0,
+      "observerPolicyHash": null
+    },
+    "rootSignature": "6tHuKPK1IByWo-c3Gv9WTaznzSYUwQsSlfXmrzeDRcy4vWntqUvIq42CmBV5ZjJO9Krc880xGMvvYqumUMpWrQ",
+    "recoverySignature": "Xx6pPqVLp99RRDIrBRljdhNVAv5ca7n-3tL6eXeYyKH9QB41mpIvFzKPSt9_ZJpqvKsHa5PUv0FA8vjWPZASdw"
+  },
+  "anchorPin": "aa5c66e3f2b782a80a4623d1834d82daf6001fe11c9253819041f80e033cedc0",
+  "resetRevision": {
+    "statement": {
+      "version": 1,
+      "feedId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "workspaceId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "number": 1,
+      "previous": "aa5c66e3f2b782a80a4623d1834d82daf6001fe11c9253819041f80e033cedc0",
+      "previousRoot": "084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5",
+      "expectedPolicyEpoch": 0,
+      "operation": {
+        "kind": "reset",
+        "rootKeySpki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEJxtEnhZilL4jiZpMOKFwpaFIieEsRkh0HGUWx9zFX7I1j3tcpdDp0_YYYZmmLR0y60En9_mflHTZHx1WQHM36Q",
+        "rootKeyId": "0fe9de7380762974b95b854c59e0509eb52a9ddc68ecfe37811d4775715ba3f3",
+        "recoveryKeySpki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEZr1g4okd2jxFOGWjAxAsZjJ0msv04OF_L5TGRqQgVsQaIQV8JrIGlx86D6874FR4RtUNlppMlkcxOZG1EB2gkg",
+        "recoveryKeyId": "e4bcbcef42f39dbec2bb94c53e2912d1dabf5125867224e441d3ee8e0a79469b",
+        "rootPossession": "1JhiRMWWVKwlokD_J4DihTMoDouaJlCtfIR8Vgv5lMVzR1Gnts-qfTY4ef-QrGptywTir4zpM3URCBfSVS-_iQ",
+        "recoveryPossession": "loyepCuXckqUNdXThf3jpUt255TzYmQAKL-CVSiYUFw9pfuK7RNS-QbEwFBv-iv0RXy69qxoDgWKtVVeGtLi_g"
+      },
+      "authorityRoot": "084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5",
+      "policyEpoch": 1,
+      "signerKeyId": "133737af84e86195db796065f6e034781da468979788ecbf25c50d8fa1e3e2c5"
+    },
+    "signature": "M_WtsYiU7KhVQ4H1R2ae0HTRzC4_IC41iiyvV-Wtu_bmsW3U19FHYGwNUY2otLdXf40-er04LwgOf3afUdtO5Q"
+  },
+  "oldRootRevision": {
+    "statement": {
+      "version": 1,
+      "feedId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "workspaceId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "number": 2,
+      "previous": "cecd9fa6ef84d10937fb5fb372e552060dd4cc3537891444244af954cd2ae058",
+      "previousRoot": "084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5",
+      "expectedPolicyEpoch": 1,
+      "operation": {
+        "kind": "policy",
+        "body": null,
+        "policyHash": null
+      },
+      "authorityRoot": "084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5",
+      "policyEpoch": 2,
+      "signerKeyId": "94cb34fc4f08d273fdf76f650933227c8f6d6bbe76adffd42d88b27dd2087531"
+    },
+    "signature": "ghls-Uzxu37gg9kW9h_hkFgMmMKLZNBOaVvf12ysGjRR2VivMl6kx1DWLudA8Ic1eReVS0EPfNQJRrrQpS60wQ"
+  },
+  "expectedAfterReset": {
+    "revision": 1,
+    "revisionHash": "cecd9fa6ef84d10937fb5fb372e552060dd4cc3537891444244af954cd2ae058",
+    "rootKeyId": "0fe9de7380762974b95b854c59e0509eb52a9ddc68ecfe37811d4775715ba3f3",
+    "recoveryKeyId": "e4bcbcef42f39dbec2bb94c53e2912d1dabf5125867224e441d3ee8e0a79469b",
+    "policyEpoch": 1,
+    "authorityRoot": "084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5",
+    "bindings": []
+  }
+}
