@@ -5,7 +5,7 @@ import { canonicalBytes, checkpointHash, completionReceiptHash, createGovernance
   decodeBase64Url, hashLeaf, parseCanonical,
   observerEvidenceSetDigest, observerFindingHash, replayGovernanceHistory,
   signObserverReport, signingKeyId, verifyObserverReport,
-  type CompletionReceipt, type GovernanceReplaySnapshot, type SignedAuthorityAnchor,
+  type CompletionReceipt, type GovernanceReplaySession, type GovernanceReplaySnapshot, type SignedAuthorityAnchor,
   type SignedCheckpoint, type SignedObserverReport } from '@drvillo/1bridge-authority'
 import { verifyObserverAnchor, type ObserverConfig } from './config'
 import type { CheckpointPageItem, ProvisionalFeedHead } from './source'
@@ -649,6 +649,29 @@ export async function recordObserverFinding(store: ObserverStore, claim: Observe
   })
 }
 
+async function replayAcceptedPrefix(anchor: SignedAuthorityAnchor, pin: string,
+  leaves: readonly Uint8Array[], checkpoints: readonly SignedCheckpoint[]): Promise<GovernanceReplaySession> {
+  if (checkpoints.length === 0) throw new TypeError('Missing accepted genesis checkpoint')
+  if (leaves.length > 10_000 || checkpoints.length > 10_001) {
+    throw new RangeError('Observer accepted-prefix replay budget exceeded')
+  }
+  const session = await createGovernanceReplaySession(anchor, pin, checkpoints[0]!)
+  let consumed = 0
+  for (const head of checkpoints.slice(1)) {
+    if (head.statement.size <= consumed || head.statement.size > leaves.length) {
+      throw new TypeError('Accepted checkpoint skips or forks the retained chain')
+    }
+    while (consumed < head.statement.size) {
+      const page = leaves.slice(consumed, Math.min(consumed + 64, head.statement.size))
+      await session.appendLeaves(page, head)
+      consumed += page.length
+    }
+    await session.sealCheckpoint(head)
+  }
+  if (consumed !== leaves.length) throw new TypeError('Unsealed accepted leaf tail')
+  return session
+}
+
 /** Replays the accepted prefix from customer-owned bytes and retains one signed report per evidence revision. */
 export async function publishObserverCoverage(store: ObserverStore, feedId: string,
   signer: CryptoKeyPair): Promise<SignedObserverReport | null> {
@@ -677,23 +700,34 @@ export async function publishObserverCoverage(store: ObserverStore, feedId: stri
     const findings = await client.query<{ evidence_bytes: Buffer }>(
       `SELECT evidence_bytes FROM observer_findings
        WHERE feed_id=$1 AND resolved_at IS NULL ORDER BY finding_id LIMIT 10001`, [feedId])
+    const receipts = await client.query<{ receipt_hash: string; leaf_index: string;
+      checkpoint_hash: string; receipt_bytes: Buffer }>(
+      `SELECT receipt_hash, leaf_index, checkpoint_hash, receipt_bytes
+       FROM observer_known_receipts WHERE feed_id=$1 ORDER BY receipt_hash LIMIT 10001`, [feedId])
     const size = safeCount(state.accepted_size)
     if (leaves.rows.length !== size || leaves.rows.some((row, index) => safeCount(row.leaf_index) !== index)
       || checkpoints.rows.length === 0 || checkpoints.rows.length > 10_001
       || checkpoints.rows.some((row, index) => safeCount(row.position) !== index)
       || checkpoints.rows.at(-1)!.statement_hash !== state.accepted_checkpoint_hash
-      || findings.rows.length > 10_000) throw new TypeError('Incomplete observer report evidence')
+      || findings.rows.length > 10_000 || receipts.rows.length > 10_000) {
+      throw new TypeError('Incomplete observer report evidence')
+    }
     let bytes = feed.rows[0]!.signed_anchor.length
     for (const row of leaves.rows) bytes += row.leaf_bytes.length
     for (const row of checkpoints.rows) bytes += row.signed_checkpoint.length
     for (const row of findings.rows) bytes += row.evidence_bytes.length
+    let receiptBytes = 0
+    for (const row of receipts.rows) receiptBytes += row.receipt_bytes.length
+    if (receiptBytes > 16 * 1024 * 1024) throw new RangeError('Known receipt archive budget exceeded')
     if (bytes > 32 * 1024 * 1024) throw new RangeError('Observer report replay budget exceeded')
     return { existing: null, pin: feed.rows[0]!.anchor_pin, revision,
       checkpointHash: state.accepted_checkpoint_hash,
       anchor: parseCanonical(feed.rows[0]!.signed_anchor) as unknown as SignedAuthorityAnchor,
       leaves: leaves.rows.map(row => new Uint8Array(row.leaf_bytes)),
       checkpoints: checkpoints.rows.map(row => parseCanonical(row.signed_checkpoint) as unknown as SignedCheckpoint),
-      findings: findings.rows.map(row => new Uint8Array(row.evidence_bytes)) }
+      findings: findings.rows.map(row => new Uint8Array(row.evidence_bytes)),
+      receipts: receipts.rows.map(row => ({ hash: row.receipt_hash, index: safeCount(row.leaf_index),
+        checkpointHash: row.checkpoint_hash, bytes: new Uint8Array(row.receipt_bytes) })) }
   })
   if (material === null) return null
   if (material.existing) {
@@ -703,15 +737,40 @@ export async function publishObserverCoverage(store: ObserverStore, feedId: stri
     }
     return previous
   }
-  const snapshot = await replayGovernanceHistory(material.anchor, material.pin,
+  const session = await replayAcceptedPrefix(material.anchor, material.pin,
     material.leaves, material.checkpoints)
+  const snapshot = session.snapshot()
   if (snapshot.feedId !== feedId || snapshot.checkpointHash !== material.checkpointHash) {
     throw new TypeError('Observer report replay disagrees with retained cursor')
   }
-  const findingHashes = [...new Set(await Promise.all(material.findings.map(observerFindingHash)))].sort()
+  const receiptHashes: string[] = []
+  const unresolvedReceiptHashes: string[] = []
+  for (const row of material.receipts) {
+    const receipt = parseCanonical(row.bytes) as unknown as CompletionReceipt
+    if (await completionReceiptHash(receipt) !== row.hash || receipt.feedId !== feedId
+      || receipt.leafIndex !== row.index
+      || await checkpointHash(receipt.checkpoint.statement) !== row.checkpointHash) {
+      throw new TypeError('Retained receipt identity mismatch')
+    }
+    receiptHashes.push(row.hash)
+    const status = receipt.leafIndex >= snapshot.size || receipt.checkpoint.statement.size > snapshot.size
+      ? 'pending' : await session.verifyReceipt(receipt, material.leaves[receipt.leafIndex]!)
+        ? 'matched' : 'unmatched'
+    if (status !== 'matched') {
+      unresolvedReceiptHashes.push(await observerFindingHash(canonicalBytes({ version: 1,
+        kind: 'observer.known_receipt_unresolved', feedId, receiptHash: row.hash, status,
+        coveredCheckpointHash: material.checkpointHash })))
+    }
+  }
+  const findingHashes = [...new Set([
+    ...await Promise.all(material.findings.map(observerFindingHash)), ...unresolvedReceiptHashes])].sort()
+  if (findingHashes.length > 20_000) throw new RangeError('Observer unresolved finding budget exceeded')
   const report = await signObserverReport(snapshot, material.checkpoints.at(-1)!, {
     anchorPin: material.pin, checkedAt: new Date().toISOString(),
-    knownReceipts: { kind: 'none', count: 0, digest: null },
+    knownReceipts: receiptHashes.length
+      ? { kind: 'known_archive', count: receiptHashes.length,
+        digest: await observerEvidenceSetDigest(receiptHashes) }
+      : { kind: 'none', count: 0, digest: null },
     unresolvedFindings: { count: findingHashes.length,
       digest: findingHashes.length ? await observerEvidenceSetDigest(findingHashes) : null }
   }, signer)
@@ -797,18 +856,9 @@ export async function reconcileRetainedReceipts(store: ObserverStore, feedId: st
   })
   if (checked.length === 0) return []
   if (retained.anchor === null) return checked.map(receipt => receipt?.feedId === feedId ? 'pending' : 'unmatched')
-  const session = await createGovernanceReplaySession(retained.anchor, retained.pin, retained.checkpoints[0]!)
-  let consumed = 0
-  for (const head of retained.checkpoints.slice(1)) {
-    while (consumed < head.statement.size) {
-      const page = retained.leaves.slice(consumed, Math.min(consumed + 64, head.statement.size))
-      await session.appendLeaves(page, head)
-      consumed += page.length
-    }
-    await session.sealCheckpoint(head)
-  }
+  const session = await replayAcceptedPrefix(retained.anchor, retained.pin, retained.leaves, retained.checkpoints)
   const snapshot = session.snapshot()
-  if (consumed !== retained.size || snapshot.feedId !== feedId || snapshot.size !== retained.size
+  if (snapshot.feedId !== feedId || snapshot.size !== retained.size
     || snapshot.checkpointHash !== retained.hash) throw new TypeError('Observer receipt replay disagrees with cursor')
   const results: RetainedReceiptStatus[] = []
   for (const receipt of checked) {
@@ -818,6 +868,55 @@ export async function reconcileRetainedReceipts(store: ObserverStore, feedId: st
       ? 'matched' : 'unmatched')
   }
   return results
+}
+
+/** Stores one externally supplied exact receipt; ingress trust is the caller's responsibility. */
+export async function retainKnownReceipt(store: ObserverStore, feedId: string,
+  value: CompletionReceipt): Promise<{ receiptHash: string; inserted: boolean }> {
+  if (typeof feedId !== 'string' || !HASH.test(feedId)) throw new TypeError('Invalid observer feed ID')
+  const copied = parseCanonical(canonicalBytes(value)) as unknown as CompletionReceipt
+  const bytes = Buffer.from(canonicalBytes(copied))
+  const receiptHash = await completionReceiptHash(copied)
+  if (copied.feedId !== feedId) throw new TypeError('Known receipt feed mismatch')
+  const headHash = await checkpointHash(copied.checkpoint.statement)
+  return transaction(store, async client => {
+    const cursor = await client.query<{ report_revision: string }>(
+      'SELECT report_revision FROM observer_cursors WHERE feed_id=$1 FOR UPDATE', [feedId])
+    if (cursor.rows.length !== 1) throw new TypeError('Unknown observer feed')
+    const existing = await client.query<{ receipt_bytes: Buffer }>(
+      'SELECT receipt_bytes FROM observer_known_receipts WHERE feed_id=$1 AND receipt_hash=$2',
+      [feedId, receiptHash])
+    if (existing.rows[0]) {
+      if (!existing.rows[0].receipt_bytes.equals(bytes)) throw new TypeError('Known receipt identity collision')
+      return { receiptHash, inserted: false }
+    }
+    const total = await client.query<{ receipt_count: string; receipt_bytes: string }>(
+      `SELECT count(*)::text AS receipt_count,
+         coalesce(sum(octet_length(receipt_bytes)), 0)::text AS receipt_bytes
+       FROM observer_known_receipts WHERE feed_id=$1`, [feedId])
+    if (safeCount(total.rows[0]?.receipt_count) >= 10_000
+      || safeCount(total.rows[0]?.receipt_bytes) + bytes.length > 16 * 1024 * 1024) {
+      throw new RangeError('Known receipt archive budget exceeded')
+    }
+    if (safeCount(cursor.rows[0]!.report_revision) === Number.MAX_SAFE_INTEGER) {
+      throw new RangeError('Observer report revision exhausted')
+    }
+    const inserted = await client.query(
+      `INSERT INTO observer_known_receipts(feed_id, receipt_hash, leaf_index, checkpoint_hash, receipt_bytes)
+       VALUES($1,$2,$3,$4,$5) ON CONFLICT (feed_id, receipt_hash) DO NOTHING`,
+      [feedId, receiptHash, copied.leafIndex, headHash, bytes])
+    if (inserted.rowCount !== 1) {
+      const concurrent = await client.query<{ receipt_bytes: Buffer }>(
+        'SELECT receipt_bytes FROM observer_known_receipts WHERE feed_id=$1 AND receipt_hash=$2',
+        [feedId, receiptHash])
+      if (concurrent.rows.length !== 1 || !concurrent.rows[0]!.receipt_bytes.equals(bytes)) {
+        throw new TypeError('Known receipt identity collision')
+      }
+      return { receiptHash, inserted: false }
+    }
+    await client.query('UPDATE observer_cursors SET report_revision=report_revision+1 WHERE feed_id=$1', [feedId])
+    return { receiptHash, inserted: true }
+  })
 }
 
 /** Reads the newest retained report under a separately trusted observer public key. */
