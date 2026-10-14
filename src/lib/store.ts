@@ -32,6 +32,15 @@ export interface ObserverBatch {
   checkpoints: readonly CheckpointPageItem[]
 }
 export interface StagedBatchResult { alreadyApplied: boolean; claim: ObserverTargetLease }
+export interface ObserverProgress {
+  acceptedSize: number
+  acceptedHash: string | null
+  acceptedCheckpointBytes: Uint8Array | null
+  stagedNextIndex: number
+  checkpointAfter: string
+  target: ProvisionalFeedHead | null
+  targetClaim: ObserverTargetLease | null
+}
 
 interface StoreConnection { pool: pg.Pool; schema: string }
 const connections = new WeakMap<ObserverStore, StoreConnection>()
@@ -234,6 +243,46 @@ export async function claimObserverLease(store: ObserverStore, feedId: string, w
   if (!(row.lease_until instanceof Date) || !Number.isFinite(row.lease_until.getTime())) throw new TypeError('Invalid database lease time')
   return { feedId, workerId, epoch: safeCount(row.lease_epoch), version: safeCount(row.version),
     expiresAt: new Date(row.lease_until) }
+}
+
+/** Reads the current fixed target and staging cursor under the fenced claim. */
+export async function readObserverProgress(store: ObserverStore, claim: ObserverLease): Promise<ObserverProgress> {
+  return transaction(store, async client => {
+    const cursor = await lockClaim(client, claim)
+    const acceptedSize = safeCount(cursor.accepted_size)
+    const acceptedHash = cursor.accepted_checkpoint_hash
+    let acceptedCheckpointBytes: Uint8Array | null = null
+    if (acceptedHash) {
+      const accepted = await client.query<{ signed_checkpoint: Buffer }>(
+        'SELECT signed_checkpoint FROM observer_checkpoints WHERE feed_id=$1 AND statement_hash=$2',
+        [claim.feedId, acceptedHash])
+      if (accepted.rows.length !== 1) throw new TypeError('Accepted observer checkpoint is missing')
+      acceptedCheckpointBytes = new Uint8Array(accepted.rows[0]!.signed_checkpoint)
+    }
+    const stagedNextIndex = safeCount(cursor.staged_next_index)
+    const checkpointAfter = cursor.staged_checkpoint_tail_hash ?? acceptedHash ?? 'start'
+    if (cursor.active_attempt_id === null) return { acceptedSize, acceptedHash,
+      acceptedCheckpointBytes, stagedNextIndex, checkpointAfter, target: null, targetClaim: null }
+    const attemptId = safeCount(cursor.active_attempt_id)
+    const result = await client.query<{ target_hash: string; target_size: string;
+      signed_checkpoint: Buffer; status: string }>(
+      'SELECT target_hash, target_size, signed_checkpoint, status FROM observer_targets WHERE feed_id=$1 AND attempt_id=$2',
+      [claim.feedId, attemptId])
+    const row = result.rows[0]
+    if (!row || row.status !== 'active' || !(cursor.lease_until instanceof Date)) {
+      throw new TypeError('Active observer target is missing')
+    }
+    const signedCheckpointBytes = new Uint8Array(row.signed_checkpoint)
+    const signedCheckpoint = parseCanonical(signedCheckpointBytes) as unknown as SignedCheckpoint
+    const target: ProvisionalFeedHead = { provisional: true, checkpointHash: row.target_hash,
+      signedCheckpoint, signedCheckpointBytes }
+    const snapshot = await snapshotTarget(target, claim.feedId)
+    if (snapshot.size !== safeCount(row.target_size)) throw new TypeError('Active observer target size changed')
+    const targetClaim: ObserverTargetLease = { ...claim, expiresAt: new Date(cursor.lease_until),
+      attemptId, targetHash: row.target_hash, targetSize: snapshot.size }
+    return { acceptedSize, acceptedHash, acceptedCheckpointBytes, stagedNextIndex,
+      checkpointAfter, target, targetClaim }
+  })
 }
 
 /** Fixes one exact but still unauthenticated signed target under a fenced lease. */

@@ -1,6 +1,6 @@
 # Independent observer architecture and implementation order
 
-Status: design contract and partial implementation, 2026-10-14. The observer has a runnable Next.js bootstrap, bounded source pull and process-local replay, plus a Postgres store for schema installation, pinned feed registration, fenced leases, provisional target fixation, unverified staging, cryptographically checked target acceptance, and retained replay findings. It has no poller, signed audit coverage or deployed observer. The user selected a public, customer-run, TypeScript observer that pulls 1bridge, supports Vercel and ordinary Postgres/Supabase, and never participates in a release decision. This design uses the 1bridge D1–D4 shared architecture.
+Status: design contract and partial implementation, 2026-10-14. The observer has a runnable Next.js bootstrap, bounded source pull and process-local replay, a Postgres store for staged/accepted evidence, and a bounded resumable poll core. It has no invocation route, signed audit coverage or deployed observer. The user selected a public, customer-run, TypeScript observer that pulls 1bridge, supports Vercel and ordinary Postgres/Supabase, and never participates in a release decision. This design uses the 1bridge D1–D4 shared architecture.
 
 ## Ground truth and trust boundary
 
@@ -42,4 +42,4 @@ A signed receipt retained outside provider control names a completed event/index
 4. Add Vercel/Node invocation, daily cron setup, bounded continuation, configuration validation, signing key custody, manual operation, and reproducible deployment guide. Build and run a deployed preview smoke; document any environment that could not be exercised.
 5. Add independent receipt ingestion/reconciliation once the retention transport is settled; test an offline backlog and a known withheld tail, including the negative case where no independent copy exists. Run cross-repo fixtures before touching 1bridge application source.
 
-The Next.js bootstrap, source verifier and `pg` store have local package and disposable Postgres integration checks. The store can accept a fully replayed retained target and quarantine invalid retained evidence, but no runtime drives this path yet. No poll, deployed Vercel smoke or audit report is claimed.
+The Next.js bootstrap, source verifier, `pg` store and bounded poll core have local package and disposable Postgres integration checks. The core can resume a partial target, accept fully replayed evidence and quarantine invalid evidence, but no production route drives it yet. No deployed Vercel smoke or signed audit report is claimed.

@@ -17,7 +17,7 @@ for _ in $(seq 1 60); do
 done
 docker exec "$container" pg_isready -h 127.0.0.1 -U postgres -d postgres >/dev/null
 docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres \
-  -c 'CREATE SCHEMA observer_test; CREATE SCHEMA observer_parallel' >/dev/null
+  -c 'CREATE SCHEMA observer_test; CREATE SCHEMA observer_parallel; CREATE SCHEMA observer_poll; CREATE SCHEMA observer_poll_unavailable; CREATE SCHEMA observer_poll_invalid' >/dev/null
 port=$(docker port "$container" 5432/tcp | awk -F: 'END { print $NF }')
 if [[ ! "$port" =~ ^[0-9]+$ ]]; then
   echo 'Docker did not publish the test Postgres port' >&2
