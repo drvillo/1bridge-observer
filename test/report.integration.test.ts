@@ -21,6 +21,9 @@ describe('signed observer coverage', () => {
     expect(typeof exports.readLatestObserverCoverage).toBe('function')
     const readLatest = exports.readLatestObserverCoverage as (store: observerStore.ObserverStore,
       feedId: string, trustedPin: string, trustedKey: CryptoKey) => Promise<authority.SignedObserverReport | null>
+    expect(typeof exports.reconcileRetainedReceipts).toBe('function')
+    const reconcile = exports.reconcileRetainedReceipts as (store: observerStore.ObserverStore,
+      feedId: string, receipts: authority.CompletionReceipt[]) => Promise<string[]>
     const history = await buildGovernanceSource()
     const source = await startGovernanceSource(history)
     const store = observerStore.openObserverStore(databaseUrl, 'observer_report')
@@ -33,6 +36,8 @@ describe('signed observer coverage', () => {
     try {
       await observerStore.installObserverSchema(store)
       await observerStore.registerObserverFeed(store, config)
+      expect(await reconcile(store, feedId, [history.firstReceipt, history.secondReceipt]))
+        .toEqual(['pending', 'pending'])
       expect(await publish(store, feedId, signer)).toBeNull()
       expect((await pollObserverOnce(store, config, 'report-worker',
         { maxLeafPages: 16, maxCheckpoints: 16, maxMs: 20_000 })).status).toBe('accepted')
@@ -45,6 +50,14 @@ describe('signed observer coverage', () => {
         { feedId, anchorPin: history.anchorPin })).toBe(true)
       expect(await publish(store, feedId, signer)).toEqual(report)
       expect((await inspector.query('SELECT count(*) AS total FROM observer_report.observer_reports')).rows[0].total).toBe('1')
+      expect(await reconcile(store, feedId, [history.firstReceipt, history.secondReceipt,
+        { ...history.secondReceipt, checkpoint: history.wrongRoot },
+        { ...history.firstReceipt, leafHash: '0'.repeat(64) }]))
+        .toEqual(['matched', 'matched', 'unmatched', 'unmatched'])
+      const mutableReceipt = structuredClone(history.secondReceipt)
+      const checkingSnapshot = reconcile(store, feedId, [history.firstReceipt, mutableReceipt])
+      mutableReceipt.leafHash = '0'.repeat(64)
+      expect(await checkingSnapshot).toEqual(['matched', 'matched'])
 
       const stagingLease = await observerStore.claimObserverLease(store, feedId, 'staging-worker', 30_000)
       expect(stagingLease).not.toBeNull()
@@ -76,6 +89,47 @@ describe('signed observer coverage', () => {
         WHERE report_revision=(SELECT max(report_revision) FROM observer_report.observer_reports)`, [earlierHash])
       await expect(readLatest(store, feedId, history.anchorPin, signer.publicKey))
         .rejects.toThrow(/identity mismatch/i)
+    } finally { await store.close(); await source.close() }
+  })
+
+  it('keeps a later signed receipt pending even when its leaf index is already covered', async () => {
+    const history = await buildGovernanceSource()
+    const source = await startGovernanceSource(history)
+    const store = observerStore.openObserverStore(databaseUrl, 'observer_receipt_partial')
+    const feedId = history.signedAnchor.anchor.feedId
+    const config: ObserverConfig = { sourceBaseUrl: source.baseUrl, feedId,
+      anchorPin: history.anchorPin,
+      signedAnchor: authority.encodeBase64Url(authority.canonicalBytes(history.signedAnchor)),
+      databaseUrl, databaseSchema: 'observer_receipt_partial', cronSecret: 'x'.repeat(32) }
+    const futureReceipt = { ...history.firstReceipt,
+      checkpoint: history.checkpoints.at(-1)!,
+      inclusionProof: await authority.inclusionProof(history.leaves, history.firstReceipt.leafIndex) }
+    expect(await authority.verifyReceiptInclusion(futureReceipt,
+      history.leaves[futureReceipt.leafIndex]!, futureReceipt.checkpoint)).toBe(true)
+    const otherFeed = { ...history.secondReceipt, feedId: '9'.repeat(64),
+      checkpoint: { ...history.secondReceipt.checkpoint,
+        statement: { ...history.secondReceipt.checkpoint.statement, feedId: '9'.repeat(64) } } }
+    try {
+      await observerStore.installObserverSchema(store)
+      await observerStore.registerObserverFeed(store, config)
+      const head = history.checkpoints[2]!
+      const lease = await observerStore.claimObserverLease(store, feedId, 'partial-worker', 30_000)
+      expect(lease).not.toBeNull()
+      const target = await observerStore.beginObserverTarget(store, lease!, {
+        provisional: true, checkpointHash: await authority.checkpointHash(head.statement),
+        signedCheckpoint: head, signedCheckpointBytes: authority.canonicalBytes(head) })
+      const checkpoints = await Promise.all(history.checkpoints.slice(0, 3).map(async signed => ({
+        bytes: authority.canonicalBytes(signed), signed, hash: await authority.checkpointHash(signed.statement) })))
+      const staged = await observerStore.stageObserverBatch(store, target,
+        { start: 0, leaves: history.leaves.slice(0, 2), checkpoints })
+      expect((await observerStore.acceptObserverTarget(store, staged.claim)).size).toBe(2)
+      await observerStore.releaseObserverLease(store, lease!)
+      expect(await observerStore.reconcileRetainedReceipts(store, feedId, [futureReceipt, otherFeed]))
+        .toEqual(['pending', 'unmatched'])
+      expect((await pollObserverOnce(store, config, 'full-worker',
+        { maxLeafPages: 16, maxCheckpoints: 16, maxMs: 20_000 })).status).toBe('accepted')
+      expect(await observerStore.reconcileRetainedReceipts(store, feedId, [futureReceipt]))
+        .toEqual(['matched'])
     } finally { await store.close(); await source.close() }
   })
 })

@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import pg, { type PoolClient } from 'pg'
-import { canonicalBytes, checkpointHash, decodeBase64Url, hashLeaf, parseCanonical,
+import { canonicalBytes, checkpointHash, completionReceiptHash, createGovernanceReplaySession,
+  decodeBase64Url, hashLeaf, parseCanonical,
   observerEvidenceSetDigest, observerFindingHash, replayGovernanceHistory,
   signObserverReport, signingKeyId, verifyObserverReport,
-  type GovernanceReplaySnapshot, type SignedAuthorityAnchor,
+  type CompletionReceipt, type GovernanceReplaySnapshot, type SignedAuthorityAnchor,
   type SignedCheckpoint, type SignedObserverReport } from '@drvillo/1bridge-authority'
 import { verifyObserverAnchor, type ObserverConfig } from './config'
 import type { CheckpointPageItem, ProvisionalFeedHead } from './source'
@@ -733,6 +734,82 @@ export async function publishObserverCoverage(store: ObserverStore, feedId: stri
     }
     return existing
   })
+}
+
+export type RetainedReceiptStatus = 'matched' | 'pending' | 'unmatched'
+
+/** Compares supplied receipts with one authenticated retained prefix; it does not retain the receipts. */
+export async function reconcileRetainedReceipts(store: ObserverStore, feedId: string,
+  receipts: readonly CompletionReceipt[]): Promise<RetainedReceiptStatus[]> {
+  if (typeof feedId !== 'string' || !HASH.test(feedId)) throw new TypeError('Invalid observer feed ID')
+  const entries = denseItems(receipts, 64)
+  const snapshots = entries.map(entry => {
+    try {
+      return parseCanonical(canonicalBytes(entry)) as unknown as CompletionReceipt
+    } catch { return null }
+  })
+  const checked: Array<CompletionReceipt | null> = []
+  for (const snapshot of snapshots) {
+    if (snapshot === null) { checked.push(null); continue }
+    try { await completionReceiptHash(snapshot); checked.push(snapshot) }
+    catch { checked.push(null) }
+  }
+  const retained = await transaction(store, async client => {
+    const feed = await client.query<{ anchor_pin: string; signed_anchor: Buffer }>(
+      'SELECT anchor_pin, signed_anchor FROM observer_feeds WHERE feed_id=$1', [feedId])
+    const cursor = await client.query<{ accepted_size: string; accepted_checkpoint_hash: string | null }>(
+      'SELECT accepted_size, accepted_checkpoint_hash FROM observer_cursors WHERE feed_id=$1 FOR SHARE', [feedId])
+    if (feed.rows.length !== 1 || cursor.rows.length !== 1) throw new TypeError('Unknown observer feed')
+    const size = safeCount(cursor.rows[0]!.accepted_size)
+    const hash = cursor.rows[0]!.accepted_checkpoint_hash
+    if (hash === null) {
+      if (size !== 0) throw new TypeError('Observer cursor has no accepted checkpoint')
+      return { size, hash, anchor: null, pin: feed.rows[0]!.anchor_pin,
+        leaves: [] as Uint8Array[], checkpoints: [] as SignedCheckpoint[] }
+    }
+    if (size > 10_000) throw new RangeError('Observer receipt replay budget exceeded')
+    const leaves = await client.query<{ leaf_index: string; leaf_bytes: Buffer }>(
+      'SELECT leaf_index, leaf_bytes FROM observer_leaves WHERE feed_id=$1 ORDER BY leaf_index', [feedId])
+    const checkpoints = await client.query<{ position: string; statement_hash: string; signed_checkpoint: Buffer }>(
+      'SELECT position, statement_hash, signed_checkpoint FROM observer_checkpoints WHERE feed_id=$1 ORDER BY position',
+      [feedId])
+    if (leaves.rows.length !== size || leaves.rows.some((row, index) => safeCount(row.leaf_index) !== index)
+      || checkpoints.rows.length === 0 || checkpoints.rows.length > 10_001
+      || checkpoints.rows.some((row, index) => safeCount(row.position) !== index)
+      || checkpoints.rows.at(-1)!.statement_hash !== hash) {
+      throw new TypeError('Incomplete observer receipt evidence')
+    }
+    let bytes = feed.rows[0]!.signed_anchor.length
+    for (const row of leaves.rows) bytes += row.leaf_bytes.length
+    for (const row of checkpoints.rows) bytes += row.signed_checkpoint.length
+    if (bytes > 32 * 1024 * 1024) throw new RangeError('Observer receipt replay budget exceeded')
+    return { size, hash, anchor: parseCanonical(feed.rows[0]!.signed_anchor) as unknown as SignedAuthorityAnchor,
+      pin: feed.rows[0]!.anchor_pin, leaves: leaves.rows.map(row => new Uint8Array(row.leaf_bytes)),
+      checkpoints: checkpoints.rows.map(row => parseCanonical(row.signed_checkpoint) as unknown as SignedCheckpoint) }
+  })
+  if (checked.length === 0) return []
+  if (retained.anchor === null) return checked.map(receipt => receipt?.feedId === feedId ? 'pending' : 'unmatched')
+  const session = await createGovernanceReplaySession(retained.anchor, retained.pin, retained.checkpoints[0]!)
+  let consumed = 0
+  for (const head of retained.checkpoints.slice(1)) {
+    while (consumed < head.statement.size) {
+      const page = retained.leaves.slice(consumed, Math.min(consumed + 64, head.statement.size))
+      await session.appendLeaves(page, head)
+      consumed += page.length
+    }
+    await session.sealCheckpoint(head)
+  }
+  const snapshot = session.snapshot()
+  if (consumed !== retained.size || snapshot.feedId !== feedId || snapshot.size !== retained.size
+    || snapshot.checkpointHash !== retained.hash) throw new TypeError('Observer receipt replay disagrees with cursor')
+  const results: RetainedReceiptStatus[] = []
+  for (const receipt of checked) {
+    if (!receipt || receipt.feedId !== feedId) results.push('unmatched')
+    else if (receipt.leafIndex >= retained.size || receipt.checkpoint.statement.size > retained.size) results.push('pending')
+    else results.push(await session.verifyReceipt(receipt, retained.leaves[receipt.leafIndex]!)
+      ? 'matched' : 'unmatched')
+  }
+  return results
 }
 
 /** Reads the newest retained report under a separately trusted observer public key. */
