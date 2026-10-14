@@ -3,7 +3,8 @@ import type { ObserverConfig } from './config'
 import { discoverFeedHead, fetchCheckpointPage, fetchLeafPage,
   SourceHttpError, SourceProtocolError, SourceTransportError } from './source'
 import { acceptObserverTarget, beginObserverTarget, claimObserverLease,
-  quarantineObserverTarget, readObserverProgress, recordObserverFinding, registerObserverFeed, stageObserverBatch,
+  quarantineObserverTarget, readObserverProgress, recordObserverFinding, registerObserverFeed,
+  releaseObserverLease, stageObserverBatch,
   type ObserverStore } from './store'
 
 export interface PollBudget {
@@ -39,68 +40,72 @@ export async function pollObserverOnce(store: ObserverStore, config: ObserverCon
   const lease = await claimObserverLease(store, config.feedId, workerId,
     Math.min(300_000, budget.maxMs + 15_000))
   if (!lease) return { status: 'busy' }
-  const progress = await readObserverProgress(store, lease)
-  let target = progress.target
-  let claim = progress.targetClaim
-  let stagedNext = progress.stagedNextIndex
-  let after = progress.checkpointAfter
-  let leafPages = 0
-  let checkpointPages = 0
-  const requestOptions = () => ({ timeoutMs: Math.max(1, Math.min(10_000, deadline - Date.now())) })
   try {
-    if (!target) {
-      if (Date.now() >= deadline) return { status: 'pending' }
-      target = await discoverFeedHead(config, requestOptions())
-      if (target.checkpointHash === progress.acceptedHash) {
-        if (!progress.acceptedCheckpointBytes
-          || !equalBytes(target.signedCheckpointBytes, progress.acceptedCheckpointBytes)) {
-          throw new SourceProtocolError('Source head bytes differ from retained accepted head')
+    const progress = await readObserverProgress(store, lease)
+    let target = progress.target
+    let claim = progress.targetClaim
+    let stagedNext = progress.stagedNextIndex
+    let after = progress.checkpointAfter
+    let leafPages = 0
+    let checkpointPages = 0
+    const requestOptions = () => ({ timeoutMs: Math.max(1, Math.min(10_000, deadline - Date.now())) })
+    try {
+      if (!target) {
+        if (Date.now() >= deadline) return { status: 'pending' }
+        target = await discoverFeedHead(config, requestOptions())
+        if (target.checkpointHash === progress.acceptedHash) {
+          if (!progress.acceptedCheckpointBytes
+            || !equalBytes(target.signedCheckpointBytes, progress.acceptedCheckpointBytes)) {
+            throw new SourceProtocolError('Source head bytes differ from retained accepted head')
+          }
+          return { status: 'up_to_date' }
         }
-        return { status: 'up_to_date' }
+        if (target.signedCheckpoint.statement.size < progress.acceptedSize) {
+          throw new SourceProtocolError('Source head is behind retained accepted coverage')
+        }
+        claim = await beginObserverTarget(store, lease, target)
       }
-      if (target.signedCheckpoint.statement.size < progress.acceptedSize) {
-        throw new SourceProtocolError('Source head is behind retained accepted coverage')
-      }
-      claim = await beginObserverTarget(store, lease, target)
-    }
-    if (!claim) throw new TypeError('Observer target claim is missing')
-    while (after !== target.checkpointHash) {
-      if (checkpointPages >= budget.maxCheckpoints || Date.now() >= deadline) return { status: 'pending' }
-      const page = await fetchCheckpointPage(config, target.checkpointHash, after, 1, requestOptions())
-      const checkpoint = page.items[0]
-      if (!checkpoint) throw new SourceProtocolError('Missing fixed-target checkpoint')
-      while (stagedNext < checkpoint.signed.statement.size) {
-        if (leafPages >= budget.maxLeafPages || Date.now() >= deadline) return { status: 'pending' }
-        const leaves = await fetchLeafPage(config, target.checkpointHash, stagedNext,
-          target.signedCheckpoint.statement.size,
-          Math.min(64, checkpoint.signed.statement.size - stagedNext), requestOptions())
+      if (!claim) throw new TypeError('Observer target claim is missing')
+      while (after !== target.checkpointHash) {
+        if (checkpointPages >= budget.maxCheckpoints || Date.now() >= deadline) return { status: 'pending' }
+        const page = await fetchCheckpointPage(config, target.checkpointHash, after, 1, requestOptions())
+        const checkpoint = page.items[0]
+        if (!checkpoint) throw new SourceProtocolError('Missing fixed-target checkpoint')
+        while (stagedNext < checkpoint.signed.statement.size) {
+          if (leafPages >= budget.maxLeafPages || Date.now() >= deadline) return { status: 'pending' }
+          const leaves = await fetchLeafPage(config, target.checkpointHash, stagedNext,
+            target.signedCheckpoint.statement.size,
+            Math.min(64, checkpoint.signed.statement.size - stagedNext), requestOptions())
+          const staged = await stageObserverBatch(store, claim,
+            { start: stagedNext, leaves: leaves.items, checkpoints: [] })
+          claim = staged.claim
+          stagedNext += leaves.items.length
+          leafPages++
+        }
         const staged = await stageObserverBatch(store, claim,
-          { start: stagedNext, leaves: leaves.items, checkpoints: [] })
+          { start: stagedNext, leaves: [], checkpoints: [checkpoint] })
         claim = staged.claim
-        stagedNext += leaves.items.length
-        leafPages++
+        after = checkpoint.hash
+        checkpointPages++
       }
-      const staged = await stageObserverBatch(store, claim,
-        { start: stagedNext, leaves: [], checkpoints: [checkpoint] })
-      claim = staged.claim
-      after = checkpoint.hash
-      checkpointPages++
+      try { return { status: 'accepted', snapshot: await acceptObserverTarget(store, claim) } }
+      catch (error) {
+        if (!(error instanceof TypeError)) throw error
+        return { status: 'quarantined', findingId: await quarantineObserverTarget(store, claim) }
+      }
+    } catch (error) {
+      if (error instanceof SourceHttpError || error instanceof SourceTransportError) return { status: 'unavailable' }
+      if (error instanceof SourceProtocolError) {
+        const evidence = canonicalBytes({ version: 1, kind: 'observer.source_nonconformance',
+          feedId: config.feedId, targetHash: target?.checkpointHash ?? null,
+          signedTarget: target ? encodeBase64Url(target.signedCheckpointBytes) : null,
+          after, stagedNextIndex: stagedNext, reason: error.message })
+        await recordObserverFinding(store, claim ?? lease, 'source_nonconformance', evidence)
+        return { status: 'source_nonconforming' }
+      }
+      throw error
     }
-    try { return { status: 'accepted', snapshot: await acceptObserverTarget(store, claim) } }
-    catch (error) {
-      if (!(error instanceof TypeError)) throw error
-      return { status: 'quarantined', findingId: await quarantineObserverTarget(store, claim) }
-    }
-  } catch (error) {
-    if (error instanceof SourceHttpError || error instanceof SourceTransportError) return { status: 'unavailable' }
-    if (error instanceof SourceProtocolError) {
-      const evidence = canonicalBytes({ version: 1, kind: 'observer.source_nonconformance',
-        feedId: config.feedId, targetHash: target?.checkpointHash ?? null,
-        signedTarget: target ? encodeBase64Url(target.signedCheckpointBytes) : null,
-        after, stagedNextIndex: stagedNext, reason: error.message })
-      await recordObserverFinding(store, claim ?? lease, 'source_nonconformance', evidence)
-      return { status: 'source_nonconforming' }
-    }
-    throw error
+  } finally {
+    await releaseObserverLease(store, lease)
   }
 }

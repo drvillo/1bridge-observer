@@ -1,12 +1,12 @@
 # Bounded durable pull increment
 
-Status: poll core implemented and under verification, 2026-10-14. The application has no governance publisher yet; the HTTP source is a test fixture. This increment cannot claim a deployed independent observer or hidden-tail detection.
+Status: poll core and protected invocation route implemented and under verification, 2026-10-14. The application has no governance publisher yet; the HTTP source is a test fixture. This increment cannot claim a deployed independent observer or hidden-tail detection.
 
 ## Ground truth
 
 - `src/lib/source.ts` discovers a provisional exact head and fetches canonical checkpoint and leaf pages under a fixed target. Each HTTP request is bounded, but these functions do not retain progress.
 - `src/lib/store.ts` retains one fenced active target, staged source bytes, accepted replayed bytes, and replay-rejected findings. `claimObserverLease` gives a versioned lease; `stageObserverBatch` advances only staging; `acceptObserverTarget` replays the retained prefix under the independent pin before commit.
-- `test/governance-source-fixture.ts` serves the shared mixed-history fixture and can make leaf requests unavailable. No production route invokes the store or source client.
+- `test/governance-source-fixture.ts` serves the shared mixed-history fixture and can make leaf requests unavailable. `GET /api/poll` invokes the durable core after checking `CRON_SECRET`.
 - Unverified: provider machine-read authorization. The user has a pending question. The first poller test uses the local public fixture and must not settle the production authentication contract.
 
 ## Journey and states
@@ -25,7 +25,7 @@ Status: poll core implemented and under verification, 2026-10-14. The applicatio
 | Path/name | Purpose | Decision |
 |---|---|---|
 | `src/lib/store.ts` `readObserverProgress` | Read target/cursors under current fenced claim | One read transaction, defensive return |
-| `src/lib/poll.ts` `pollObserverOnce` | Advance a bounded amount of source evidence and settle a complete target | One orchestration function; no HTTP route or signing yet |
+| `src/lib/poll.ts` `pollObserverOnce` | Advance a bounded amount of source evidence and settle a complete target | One orchestration function; no signing yet |
 | `test/poll.integration.test.ts` | Prove offline resume, honest catch-up, invalid candidate and no-op on real Postgres | Lowest layer that sees HTTP and durable DB |
 | `test/store.integration.test.sh`, `test/store.supabase.test.sh` | Give poll tests a distinct disposable schema | No application table touched |
 
@@ -44,4 +44,4 @@ The poller uses checkpoint pages of one item each. It fetches and stages leaf pa
 
 ## Principles and verification
 
-The source client owns HTTP parsing, store owns durable facts and fencing, and the poller owns orchestration. No new dependency or directory convention is needed. Do not add a Vercel cron route before the source authorization and deployment contract is settled. Run red integration tests first, then `pnpm test`, `pnpm test:integration`, local Supabase integration, `pnpm lint`, `pnpm typecheck`, `pnpm build`, `git diff --check`, and a deliberate guard mutation. The app source remains untouched.
+The source client owns HTTP parsing, store owns durable facts and fencing, and the poller owns orchestration. The protected route uses the public-feed fixture contract while customer-scoped source authentication remains an explicit pending decision. No new dependency is needed. Run red integration tests first, then `pnpm test`, `pnpm test:integration`, local Supabase integration, `pnpm lint`, `pnpm typecheck`, `pnpm build`, `git diff --check`, and a deliberate guard mutation. The app source remains untouched.

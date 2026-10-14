@@ -245,6 +245,18 @@ export async function claimObserverLease(store: ObserverStore, feedId: string, w
     expiresAt: new Date(row.lease_until) }
 }
 
+/** Releases only the current fenced lease; a superseded worker cannot release its successor. */
+export async function releaseObserverLease(store: ObserverStore, claim: ObserverLease): Promise<boolean> {
+  if (!claim || !HASH.test(claim.feedId) || typeof claim.workerId !== 'string'
+    || claim.workerId.length < 1 || claim.workerId.length > 256
+    || !Number.isSafeInteger(claim.epoch) || claim.epoch < 1) throw new TypeError('Invalid observer lease')
+  const result = await transaction(store, client => client.query(
+    `UPDATE observer_cursors SET lease_owner=NULL, lease_until=NULL
+     WHERE feed_id=$1 AND lease_owner=$2 AND lease_epoch=$3`,
+    [claim.feedId, claim.workerId, claim.epoch]))
+  return result.rowCount === 1
+}
+
 /** Reads the current fixed target and staging cursor under the fenced claim. */
 export async function readObserverProgress(store: ObserverStore, claim: ObserverLease): Promise<ObserverProgress> {
   return transaction(store, async client => {

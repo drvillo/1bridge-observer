@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import pg from 'pg'
 import * as authority from '@drvillo/1bridge-authority'
 import { acceptObserverTarget, beginObserverTarget, claimObserverLease, installObserverSchema, openObserverStore,
-  quarantineObserverTarget, registerObserverFeed,
+  quarantineObserverTarget, registerObserverFeed, releaseObserverLease,
   stageObserverBatch,
   type ObserverStore } from '../src/lib/store'
 import type { ObserverConfig } from '../src/lib/config'
@@ -101,6 +101,9 @@ describe('durable observer store', () => {
     await inspector.query("UPDATE observer_test.observer_cursors SET lease_until=clock_timestamp()-interval '1 second'")
     const replacement = await claimObserverLease(store, config.feedId, 'worker-b', 30_000)
     expect(replacement).toMatchObject({ workerId: 'worker-b', epoch: 3, version: 0 })
+    expect(await releaseObserverLease(store, first!)).toBe(false)
+    expect(await releaseObserverLease(store, replacement!)).toBe(true)
+    expect((await inspector.query('SELECT lease_owner FROM observer_test.observer_cursors')).rows[0].lease_owner).toBeNull()
   })
 
   it('fixes one provisional target under the current lease and rejects stale claims', async () => {
