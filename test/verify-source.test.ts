@@ -28,6 +28,31 @@ describe('fixed-target source verification', () => {
     } finally { await source.close() }
   })
 
+  it('detects a suppressed action when a later signed action cites its retained receipt', async () => {
+    const history = await buildGovernanceSource()
+    const suppressed = history.suppressedFirst
+    expect(suppressed.leaves).toHaveLength(history.leaves.length - 1)
+    expect(suppressed.laterActionPredecessor).toBe(history.firstActionHash)
+    expect(await Promise.all(suppressed.leaves.map(leaf => authority.hashLeaf(leaf))))
+      .not.toContain(history.firstReceipt.leafHash)
+    expect(suppressed.checkpoints.at(-1)!.statement.historyRoot)
+      .toBe(await authority.merkleRoot(suppressed.leaves))
+    const unlinked = await startGovernanceSource({ ...history,
+      leaves: history.suppressedWithoutCitation.leaves,
+      checkpoints: history.suppressedWithoutCitation.checkpoints })
+    try {
+      const accepted = await verifySourceTarget(config(history, unlinked.baseUrl), budget)
+      expect(accepted.size).toBe(suppressed.leaves.length)
+    } finally { await unlinked.close() }
+    const source = await startGovernanceSource({ ...history, leaves: suppressed.leaves,
+      checkpoints: suppressed.checkpoints })
+    try {
+      await expect(verifySourceTarget(config(history, source.baseUrl), budget))
+        .rejects.toThrow(/First action/)
+      expect(source.calls.some(call => call.pathname.endsWith('/leaves'))).toBe(true)
+    } finally { await source.close() }
+  })
+
   it.each(['wrongRoot', 'wrongPolicy'] as const)('rejects a signed %s target after replay', async candidateName => {
     const history = await buildGovernanceSource()
     const source = await startGovernanceSource(history, history[candidateName])

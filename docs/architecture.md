@@ -34,6 +34,8 @@ The source read API will expose one fixed target signed checkpoint, every interv
 
 A signed receipt retained outside provider control names a completed event/index/head. If a later pulled feed omits it, the observer retains an unresolved gap or a cryptographic conflict once contradictory signed material is available. An unanswered request is an availability failure, not proof of tampering. Signed incompatible heads prove equivocation to a verifier that receives both. A source-only pull cannot detect an entirely hidden, coherent branch without independent evidence of it. Client-originated asynchronous receipt copying remains the recommended independent channel. Programmatic receipt retention and report reconciliation are implemented, but transport authentication and client copying remain undecided. The provider never pushes events to this observer.
 
+The HTTP adversarial test `test/verify-source.test.ts` now publishes a fully re-signed branch that omits one action, then publishes a later actor-signed action citing the omitted action's receipt. Fixed-target polling rejects that branch as a missing first action. A control branch with the same omission but no citation verifies successfully. This demonstrates eventual detection **when a later signed publication carries the predecessor evidence**; it does not make a wholly withheld coherent branch detectable by source-only polling.
+
 ## Implementation phases and tests
 
 1. Finish the authority library's checkpoint, action/authority replay and receipt verification contracts. Freeze shared fixture vectors and import the tested package. No app source edit occurs here.

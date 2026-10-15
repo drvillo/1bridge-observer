@@ -22,6 +22,15 @@ export interface GovernanceSourceHistory {
   firstReceipt: authority.CompletionReceipt
   secondReceipt: authority.CompletionReceipt
   secondActionPredecessor: string | null
+  suppressedFirst: {
+    leaves: Uint8Array[]
+    checkpoints: authority.SignedCheckpoint[]
+    laterActionPredecessor: string | null
+  }
+  suppressedWithoutCitation: {
+    leaves: Uint8Array[]
+    checkpoints: authority.SignedCheckpoint[]
+  }
 }
 
 async function revision(state: authority.AuthorityState, operation: authority.AuthorityOperation,
@@ -102,6 +111,7 @@ export async function buildGovernanceSource(): Promise<GovernanceSourceHistory> 
     state = await authority.applyAuthorityRevision(state, signed)
     leaves.push(authority.authorityRevisionLeaf(signed))
     await seal(signer)
+    return signed
   }
   async function appendAction(signer: CryptoKeyPair, subject: string, operationId: string,
     predecessor: authority.CompletionReceipt | null, providerSigner: CryptoKeyPair) {
@@ -115,15 +125,45 @@ export async function buildGovernanceSource(): Promise<GovernanceSourceHistory> 
 
   await appendRevision({ kind: 'bind', binding: await binding(ALICE, alice) }, provider)
   const first = await appendAction(alice, ALICE, '1'.repeat(64), null, provider)
-  await appendRevision({ kind: 'bind', binding: await binding(BOB, bob) }, provider)
+  const bobRevision = await appendRevision({ kind: 'bind', binding: await binding(BOB, bob) }, provider)
+  const afterBob = state
   await appendAction(bob, BOB, '2'.repeat(64), null, provider)
   const policyBody = { strictAudit: true }
-  await appendRevision({ kind: 'policy', body: policyBody,
+  const policyRevision = await appendRevision({ kind: 'policy', body: policyBody,
     policyHash: await authority.observerPolicyHash(policyBody) }, provider)
-  await appendRevision({ kind: 'rotate-checkpoint',
+  const afterPolicy = state
+  const rotationRevision = await appendRevision({ kind: 'rotate-checkpoint',
     checkpointKeySpki: await authority.exportSigningPublicKey(rotated.publicKey),
     checkpointKeyId: await authority.signingKeyId(rotated.publicKey) }, rotated)
+  const afterRotation = state
   const second = await appendAction(alice, ALICE, '3'.repeat(64), first.integrated, rotated)
+
+  // The publisher signs an otherwise coherent branch omitting Alice's first action.
+  // Alice's later signed action still carries the independently retained receipt for it.
+  const suppressedLeaves = [leaves[0]!]
+  const suppressedCheckpoints = [checkpoints[0]!, checkpoints[1]!]
+  async function sealSuppressed(branchState: authority.AuthorityState, signer: CryptoKeyPair) {
+    suppressedCheckpoints.push(await checkpoint(suppressedLeaves, branchState,
+      suppressedCheckpoints.at(-1)!, signer))
+  }
+  suppressedLeaves.push(authority.authorityRevisionLeaf(bobRevision))
+  await sealSuppressed(afterBob, provider)
+  const suppressedBobAction = await action(afterBob, suppressedCheckpoints.at(-1)!, bob, BOB, '2'.repeat(64))
+  suppressedLeaves.push(authority.governanceCompletionLeaf(suppressedBobAction))
+  await sealSuppressed(afterBob, provider)
+  suppressedLeaves.push(authority.authorityRevisionLeaf(policyRevision))
+  await sealSuppressed(afterPolicy, provider)
+  suppressedLeaves.push(authority.authorityRevisionLeaf(rotationRevision))
+  await sealSuppressed(afterRotation, rotated)
+  const suppressedLaterAction = await action(afterRotation, suppressedCheckpoints.at(-1)!,
+    alice, ALICE, '3'.repeat(64), first.integrated)
+  suppressedLeaves.push(authority.governanceCompletionLeaf(suppressedLaterAction))
+  await sealSuppressed(afterRotation, rotated)
+  const unlinkedAction = await action(afterRotation, suppressedCheckpoints.at(-2)!,
+    alice, ALICE, '3'.repeat(64))
+  const unlinkedLeaves = [...suppressedLeaves.slice(0, -1), authority.governanceCompletionLeaf(unlinkedAction)]
+  const unlinkedCheckpoints = [...suppressedCheckpoints.slice(0, -1),
+    await checkpoint(unlinkedLeaves, afterRotation, suppressedCheckpoints.at(-2)!, rotated)]
   const alternate = await action(state, checkpoints.at(-2)!, alice, ALICE, '4'.repeat(64), first.integrated)
   const alternateLastLeaf = authority.governanceCompletionLeaf(alternate)
   const final = checkpoints.at(-1)!
@@ -133,7 +173,10 @@ export async function buildGovernanceSource(): Promise<GovernanceSourceHistory> 
   return { signedAnchor, anchorPin, leaves, checkpoints, wrongRoot, wrongPolicy, resignedFinal, alternateLastLeaf,
     actorKeyIds: [await authority.signingKeyId(alice.publicKey), await authority.signingKeyId(bob.publicKey)],
     rotatedPublicKey: rotated.publicKey, firstReceipt: first.integrated, secondReceipt: second.integrated,
-    firstActionHash: first.integrated.actionHash, secondActionPredecessor: second.signed.statement.previousActionHash }
+    firstActionHash: first.integrated.actionHash, secondActionPredecessor: second.signed.statement.previousActionHash,
+    suppressedFirst: { leaves: suppressedLeaves, checkpoints: suppressedCheckpoints,
+      laterActionPredecessor: suppressedLaterAction.statement.previousActionHash },
+    suppressedWithoutCitation: { leaves: unlinkedLeaves, checkpoints: unlinkedCheckpoints } }
 }
 
 export interface GovernanceSourceServer {
