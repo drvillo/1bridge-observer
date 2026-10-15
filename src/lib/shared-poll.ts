@@ -17,6 +17,9 @@ export interface SharedPollResult {
   registry: RegistryPollResult
   registryHash: Hash
   feeds: { feedId: Hash; status: PollResult['status'] | 'pending' | 'error' }[]
+  feedCount: number
+  selectedCount: number
+  madeProgress: boolean
 }
 
 /** Uses only signed registry discovery; a failed feed never stops its peers. */
@@ -35,6 +38,8 @@ export async function pollSharedObserverOnce(store: ObserverStore, config: Share
   const accepted = await readRegistryFeeds(store, pin.publisherKey)
   const selected = await selectRegistryFeedBatch(store, accepted.feeds, budget.maxFeeds)
   const feeds: SharedPollResult['feeds'] = []
+  let madeProgress = registry.status === 'accepted'
+    || registry.status === 'pending' && registry.progressed
   for (const feed of selected) {
     if (!feed.advertisedHead || Date.now() >= deadline) {
       feeds.push({ feedId: feed.feedId, status: 'pending' })
@@ -50,11 +55,15 @@ export async function pollSharedObserverOnce(store: ObserverStore, config: Share
         { ...budget.feed, maxMs: Math.min(budget.feed.maxMs, Math.max(1, deadline - Date.now())) },
         feed.advertisedHead)
       feeds.push({ feedId: feed.feedId, status: result.status })
+      if (result.status === 'accepted' || result.status === 'pending' && result.progressed) {
+        madeProgress = true
+      }
     } catch (error) {
       console.error('Shared observer feed failed:', feed.feedId,
         error instanceof Error ? error.name : 'UnknownError')
       feeds.push({ feedId: feed.feedId, status: 'error' })
     }
   }
-  return { registry, registryHash: accepted.snapshot.checkpointHash, feeds }
+  return { registry, registryHash: accepted.snapshot.checkpointHash, feeds,
+    feedCount: accepted.feeds.length, selectedCount: selected.length, madeProgress }
 }

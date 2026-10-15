@@ -16,7 +16,8 @@ export interface RegistryPollBudget {
   maxMs: number
 }
 export type RegistryPollResult =
-  | { status: 'busy' | 'pending' | 'unavailable' | 'up_to_date' | 'source_nonconforming' }
+  | { status: 'busy' | 'unavailable' | 'up_to_date' | 'source_nonconforming' }
+  | { status: 'pending'; progressed: boolean }
   | { status: 'accepted'; snapshot: RegistryReplaySnapshot }
   | { status: 'quarantined' }
 
@@ -57,10 +58,12 @@ export async function pollRegistryOnce(store: ObserverStore, config: SharedObser
     let after = progress.checkpointAfter
     let entryPages = 0
     let checkpoints = 0
+    let progressed = false
+    const pending = (): RegistryPollResult => ({ status: 'pending', progressed })
     const requestOptions = () => ({ timeoutMs: Math.max(1, Math.min(10_000, deadline - Date.now())) })
     try {
       if (!target) {
-        if (Date.now() >= deadline) return { status: 'pending' }
+        if (Date.now() >= deadline) return pending()
         target = await discoverRegistryHead(config, requestOptions())
         if (target.checkpointHash === progress.acceptedHash) {
           if (!sameBytes(target.signedCheckpointBytes, progress.acceptedCheckpointBytes)) {
@@ -74,6 +77,7 @@ export async function pollRegistryOnce(store: ObserverStore, config: SharedObser
         try {
           lease = await beginRegistryTarget(store, lease, target, pin.publisherKey)
           targetIsStaged = true
+          progressed = true
         }
         catch (error) {
           if (error instanceof TypeError) throw new SourceProtocolError('Invalid signed registry target')
@@ -81,13 +85,13 @@ export async function pollRegistryOnce(store: ObserverStore, config: SharedObser
         }
       }
       while (after !== target.checkpointHash) {
-        if (checkpoints >= budget.maxCheckpoints || Date.now() >= deadline) return { status: 'pending' }
+        if (checkpoints >= budget.maxCheckpoints || Date.now() >= deadline) return pending()
         const page = await fetchRegistryCheckpointPage(config, target.checkpointHash,
           after, 1, requestOptions())
         const checkpoint = page.items[0]
         if (!checkpoint) throw new SourceProtocolError('Registry checkpoint page is incomplete')
         while (stagedNext < checkpoint.signed.statement.size) {
-          if (entryPages >= budget.maxEntryPages || Date.now() >= deadline) return { status: 'pending' }
+          if (entryPages >= budget.maxEntryPages || Date.now() >= deadline) return pending()
           const entries = await fetchRegistryEntryPage(config, target.checkpointHash,
             stagedNext, target.signedCheckpoint.statement.size,
             Math.min(64, checkpoint.signed.statement.size - stagedNext), requestOptions())
@@ -97,6 +101,7 @@ export async function pollRegistryOnce(store: ObserverStore, config: SharedObser
             throw error
           }
           stagedNext += entries.items.length
+          progressed = true
           entryPages++
         }
         const proof = await fetchRegistryConsistency(config, after, checkpoint.hash, requestOptions())
@@ -107,6 +112,7 @@ export async function pollRegistryOnce(store: ObserverStore, config: SharedObser
         }
         after = checkpoint.hash
         checkpoints++
+        progressed = true
       }
       try { return { status: 'accepted', snapshot: await acceptRegistryTarget(store, lease, pin.publisherKey) } }
       catch (error) {

@@ -5,6 +5,8 @@ import pg from 'pg'
 import * as authority from '@drvillo/1bridge-authority'
 import { loadSharedObserverConfig } from '../src/lib/config'
 import { pollSharedObserverOnce } from '../src/lib/shared-poll'
+import { nextSharedContinuation } from '../src/lib/shared-continuation'
+import { runSharedPollCycle } from '../src/lib/shared-poll-run'
 import { publishAggregateCoverage, readAggregateFeedStatusProof } from '../src/lib/aggregate-store'
 import { installObserverSchema, openObserverStore } from '../src/lib/store'
 
@@ -97,10 +99,18 @@ it('pulls pinned registry and two feeds over HTTP, catches up after an outage, a
     source.unavailableFeed = vector.feedIds[0]
     const first = await pollSharedObserverOnce(store, config, 'first', budget)
     expect(first.registry.status).toBe('pending')
+    const firstContinuation = nextSharedContinuation(null, { feedCount: first.feedCount,
+      selectedCount: first.selectedCount, madeProgress: first.madeProgress,
+      maxFeeds: budget.maxFeeds })
+    expect(firstContinuation).not.toBeNull()
     expect((await inspector.query('SELECT accepted_size, staged_next_index FROM observer_shared_http.observer_registry_cursor')).rows)
       .toEqual([{ accepted_size: '0', staged_next_index: '3' }])
     const second = await pollSharedObserverOnce(store, config, 'second', budget)
     expect(second.registry.status).toBe('accepted')
+    const secondContinuation = nextSharedContinuation(firstContinuation, {
+      feedCount: second.feedCount, selectedCount: second.selectedCount,
+      madeProgress: second.madeProgress, maxFeeds: budget.maxFeeds })
+    expect(secondContinuation).not.toBeNull()
     expect(second.feeds).toEqual([
       { feedId: vector.feedIds[0], status: 'unavailable' },
       { feedId: vector.feedIds[1], status: 'accepted' },
@@ -114,6 +124,14 @@ it('pulls pinned registry and two feeds over HTTP, catches up after an outage, a
     expect(await authority.verifyAggregateFeedStatus(pendingReport.signedReport, pendingProof!,
       signer.publicKey, publisher, vector.snapshotTwo.checkpointHash,
       vector.feedIds[0], vector.snapshotTwo.feeds[0].anchorPin)).toBe(true)
+    const outage = await runSharedPollCycle({ config, signer }, 'outage', 'when_changed')
+    expect(outage.feeds[0]?.status).toBe('unavailable')
+    expect(outage.report).toBeNull()
+    expect((await inspector.query('SELECT count(*) AS total FROM observer_shared_http.observer_aggregate_reports')).rows[0].total)
+      .toBe('1')
+    expect(nextSharedContinuation(secondContinuation, { feedCount: outage.feedCount,
+      selectedCount: outage.selectedCount, madeProgress: outage.madeProgress,
+      maxFeeds: budget.maxFeeds })).toBeNull()
     source.unavailableFeed = null
     const caughtUp = await pollSharedObserverOnce(store, config, 'catch-up', budget)
     expect(caughtUp.feeds).toEqual(vector.feedIds.map((feedId: string) => ({ feedId,

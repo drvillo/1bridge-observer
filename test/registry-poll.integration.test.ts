@@ -58,7 +58,7 @@ describe('autonomous durable registry poll', () => {
       await installObserverSchema(store)
       const first = await pollRegistryOnce(store, config('observer_registry_poll'), 'first',
         { maxEntryPages: 4, maxCheckpoints: 1, maxMs: 20_000 })
-      expect(first).toMatchObject({ status: 'pending' })
+      expect(first).toMatchObject({ status: 'pending', progressed: true })
       expect((await inspector.query('SELECT accepted_size, staged_next_index FROM observer_registry_poll.observer_registry_cursor')).rows)
         .toEqual([{ accepted_size: '0', staged_next_index: '3' }])
       const second = await pollRegistryOnce(store, config('observer_registry_poll'), 'second',

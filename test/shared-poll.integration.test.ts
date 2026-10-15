@@ -77,6 +77,10 @@ describe('shared multi-feed observer', () => {
       const result = await pollSharedObserverOnce(store, config('observer_shared_poll'), 'shared', budget)
       expect(result.registry).toMatchObject({ status: 'accepted', snapshot: vector.snapshotTwo })
       expect(result.feeds).toEqual(vector.feedIds.map((feedId: string) => ({ feedId, status: 'accepted' })))
+      expect(result).toMatchObject({ feedCount: 2, selectedCount: 2, madeProgress: true })
+      const repeated = await pollSharedObserverOnce(store, config('observer_shared_poll'), 'repeat', budget)
+      expect(repeated).toMatchObject({ feedCount: 2, selectedCount: 2, madeProgress: false,
+        registry: { status: 'up_to_date' } })
       expect((await inspector.query('SELECT feed_id FROM observer_shared_poll.observer_feeds ORDER BY feed_id')).rows
         .map(row => row.feed_id)).toEqual(vector.feedIds)
       const signer = await authority.generateSigningKey()

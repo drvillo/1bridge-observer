@@ -30,7 +30,7 @@ describe('durable bounded source poll', () => {
       const settings = config(history, source.baseUrl)
       const first = await pollObserverOnce(store, settings, 'poll-worker',
         { maxLeafPages: 16, maxCheckpoints: 2, maxMs: 20_000 })
-      expect(first).toMatchObject({ status: 'pending' })
+      expect(first).toMatchObject({ status: 'pending', progressed: true })
       const partial = await inspector.query(
         'SELECT staged_next_index, accepted_size, active_attempt_id FROM observer_poll.observer_cursors')
       expect(partial.rows[0]).toMatchObject({ staged_next_index: '1', accepted_size: '0' })
@@ -39,7 +39,7 @@ describe('durable bounded source poll', () => {
       const attemptId = partial.rows[0].active_attempt_id
       const leafLimited = await pollObserverOnce(store, settings, 'poll-worker',
         { maxLeafPages: 1, maxCheckpoints: 1, maxMs: 20_000 })
-      expect(leafLimited).toMatchObject({ status: 'pending' })
+      expect(leafLimited).toMatchObject({ status: 'pending', progressed: true })
       expect((await inspector.query('SELECT staged_next_index FROM observer_poll.observer_cursors')).rows[0].staged_next_index)
         .toBe('2')
       const resumed = await pollObserverOnce(store, settings, 'poll-worker',

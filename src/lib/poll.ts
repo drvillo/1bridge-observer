@@ -14,7 +14,8 @@ export interface PollBudget {
 }
 
 export type PollResult =
-  | { status: 'busy' | 'pending' | 'unavailable' | 'up_to_date' | 'source_nonconforming' }
+  | { status: 'busy' | 'unavailable' | 'up_to_date' | 'source_nonconforming' }
+  | { status: 'pending'; progressed: boolean }
   | { status: 'accepted'; snapshot: GovernanceReplaySnapshot }
   | { status: 'quarantined'; findingId: number }
 
@@ -48,10 +49,12 @@ export async function pollObserverOnce(store: ObserverStore, config: ObserverCon
     let after = progress.checkpointAfter
     let leafPages = 0
     let checkpoints = 0
+    let progressed = false
+    const pending = (): PollResult => ({ status: 'pending', progressed })
     const requestOptions = () => ({ timeoutMs: Math.max(1, Math.min(10_000, deadline - Date.now())) })
     try {
       if (!target) {
-        if (Date.now() >= deadline) return { status: 'pending' }
+        if (Date.now() >= deadline) return pending()
         target = fixedTarget ?? await discoverFeedHead(config, requestOptions())
         if (target.checkpointHash === progress.acceptedHash) {
           if (!progress.acceptedCheckpointBytes
@@ -64,10 +67,11 @@ export async function pollObserverOnce(store: ObserverStore, config: ObserverCon
           throw new SourceProtocolError('Source head is behind retained accepted coverage')
         }
         claim = await beginObserverTarget(store, lease, target)
+        progressed = true
       }
       if (!claim) throw new TypeError('Observer target claim is missing')
       while (after !== target.checkpointHash) {
-        if (checkpoints >= budget.maxCheckpoints || Date.now() >= deadline) return { status: 'pending' }
+        if (checkpoints >= budget.maxCheckpoints || Date.now() >= deadline) return pending()
         const checkpointLimit = Math.min(16, budget.maxCheckpoints - checkpoints)
         const page = await fetchCheckpointPage(config, target.checkpointHash, after,
           checkpointLimit, requestOptions())
@@ -77,19 +81,21 @@ export async function pollObserverOnce(store: ObserverStore, config: ObserverCon
           throw new SourceProtocolError('Checkpoint exceeds fixed target size')
         }
         while (stagedNext < lastCheckpoint.signed.statement.size) {
-          if (leafPages >= budget.maxLeafPages || Date.now() >= deadline) return { status: 'pending' }
+          if (leafPages >= budget.maxLeafPages || Date.now() >= deadline) return pending()
           const leaves = await fetchLeafPage(config, target.checkpointHash, stagedNext,
             target.signedCheckpoint.statement.size,
             Math.min(64, lastCheckpoint.signed.statement.size - stagedNext), requestOptions())
           const staged = await stageObserverBatch(store, claim,
             { start: stagedNext, leaves: leaves.items, checkpoints: [] })
           claim = staged.claim
+          progressed = true
           stagedNext += leaves.items.length
           leafPages++
         }
         const staged = await stageObserverBatch(store, claim,
           { start: stagedNext, leaves: [], checkpoints: page.items })
         claim = staged.claim
+        progressed = true
         after = lastCheckpoint.hash
         checkpoints += page.items.length
       }

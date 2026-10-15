@@ -2,5 +2,12 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     { "path": "/api/shared-poll", "schedule": "0 8 * * *" }
-  ]
+  ],
+  "functions": {
+    "src/app/api/queues/shared-catchup/route.ts": {
+      "experimentalTriggers": [
+        { "type": "queue/v2beta", "topic": "observer-catchup" }
+      ]
+    }
+  }
 }

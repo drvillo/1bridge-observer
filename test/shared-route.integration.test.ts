@@ -2,9 +2,12 @@ import { readFileSync } from 'node:fs'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import pg from 'pg'
 import * as authority from '@drvillo/1bridge-authority'
+import { send } from '@vercel/queue'
 import { GET as poll } from '../src/app/api/shared-poll/route'
 import { GET as latest } from '../src/app/api/shared-reports/latest/route'
 import { GET as status } from '../src/app/api/shared-reports/status/route'
+
+vi.mock('@vercel/queue', () => ({ send: vi.fn() }))
 
 const databaseUrl = process.env.OBSERVER_TEST_DATABASE_URL
 if (!databaseUrl) throw new Error('OBSERVER_TEST_DATABASE_URL must identify a disposable database')
@@ -54,6 +57,8 @@ describe('shared observer Vercel routes', () => {
 
   it('protects polling and publicly serves signed aggregate and scoped status proof', async () => {
     source()
+    vi.stubEnv('VERCEL', '1')
+    vi.mocked(send).mockRejectedValueOnce(new Error('queue unavailable'))
     const observer = await authority.generateSigningKey()
     const secret = 'a private observer cron secret of sufficient length'
     vi.stubEnv('SOURCE_BASE_URL', 'https://source.example/')
@@ -71,6 +76,8 @@ describe('shared observer Vercel routes', () => {
       { headers: { authorization: `Bearer ${secret}` } }))
     expect(run.status).toBe(200)
     const result = await run.json()
+    expect(result.continuationStatus).toBe('send_failed')
+    expect(send).toHaveBeenCalledOnce()
     expect(result.report.statement).toMatchObject({ coverageScope: 'shared_registry',
       verifiedFeeds: { count: 1 }, pendingFeeds: { count: 1 } })
     const publicReport = await latest()
