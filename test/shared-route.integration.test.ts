@@ -75,10 +75,12 @@ describe('shared observer Vercel routes', () => {
       verifiedFeeds: { count: 1 }, pendingFeeds: { count: 1 } })
     const publicReport = await latest()
     expect(publicReport.status).toBe(200)
+    expect(publicReport.headers.get('access-control-allow-origin')).toBe('*')
     const response = await publicReport.json()
     expect(response.signedReport).toEqual(result.report)
     const proofResponse = await status(new Request(`https://observer.example/api/shared-reports/status?reportHash=${response.reportHash}&feedId=${vector.feedIds[1]}`))
     expect(proofResponse.status).toBe(200)
+    expect(proofResponse.headers.get('access-control-allow-origin')).toBe('*')
     const proof = (await proofResponse.json()).proof
     const publisher = await authority.importSigningPublicKey(vector.publisherPublicKey)
     expect(await authority.verifyAggregateFeedStatus(response.signedReport, proof,
