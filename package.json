@@ -10,7 +10,8 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:integration": "bash test/store.integration.test.sh"
+    "test:integration": "bash test/store.integration.test.sh",
+    "bench:observer": "bash test/store.integration.test.sh vitest.benchmark.config.ts"
   },
   "dependencies": {
     "@drvillo/1bridge-authority": "github:drvillo/1bridge-authority#b48c9989b59f243b22c655b3d55b4ce0ae814f06",

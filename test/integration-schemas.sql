@@ -23,3 +23,4 @@ CREATE SCHEMA observer_poll_unavailable;
 CREATE SCHEMA observer_poll_invalid;
 CREATE SCHEMA observer_poll_protocol;
 CREATE SCHEMA observer_route;
+CREATE SCHEMA observer_benchmark;

@@ -24,4 +24,5 @@ if [[ ! "$port" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 export OBSERVER_TEST_DATABASE_URL="postgresql://postgres:observer-test@127.0.0.1:$port/postgres"
-pnpm exec vitest run --config vitest.integration.config.ts
+export OBSERVER_DISPOSABLE_DATABASE=1
+pnpm exec vitest run --config "${1:-vitest.integration.config.ts}"
