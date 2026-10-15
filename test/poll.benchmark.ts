@@ -1,8 +1,5 @@
-import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { readFile, readdir, writeFile } from 'node:fs/promises'
-import { cpus, platform, release } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { writeFile } from 'node:fs/promises'
+import { isAbsolute } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { test } from 'vitest'
 import pg from 'pg'
@@ -10,9 +7,7 @@ import * as authority from '@drvillo/1bridge-authority'
 import { pollObserverOnce } from '../src/lib/poll'
 import { installObserverSchema, openObserverStore } from '../src/lib/store'
 import { buildGovernanceSource, startGovernanceSource } from './governance-source-fixture'
-
-const authorityPin = 'github:drvillo/1bridge-authority#b48c9989b59f243b22c655b3d55b4ce0ae814f06'
-const authorityBuildSha256 = '2a0774548fb95f8d88698a8a19de02ce128d0a7c53383ddcaa561bdaf89ea50b'
+import { readBenchmarkProvenance } from './benchmark-provenance'
 
 function boundedInteger(value: string | undefined, fallback: number, min: number, max: number): number {
   if (value === undefined) return fallback
@@ -21,17 +16,6 @@ function boundedInteger(value: string | undefined, fallback: number, min: number
     throw new TypeError(`Benchmark count must be an integer from ${min} to ${max}`)
   }
   return parsed
-}
-
-async function installedAuthorityDigest(): Promise<string> {
-  const packageRoot = join(process.cwd(), 'node_modules', '@drvillo', '1bridge-authority')
-  const files = ['package.json', ...(await readdir(join(packageRoot, 'dist')))
-    .filter(file => file.endsWith('.js')).sort().map(file => `dist/${file}`)]
-  const hash = createHash('sha256')
-  for (const file of files) {
-    hash.update(file).update('\0').update(await readFile(join(packageRoot, file))).update('\0')
-  }
-  return hash.digest('hex')
 }
 
 test('measure nonempty fixed-target observer catch-up into disposable Postgres', async () => {
@@ -43,24 +27,7 @@ test('measure nonempty fixed-target observer catch-up into disposable Postgres',
   }
   const trials = boundedInteger(process.env.OBSERVER_BENCH_TRIALS, 30, 1, 100)
   const warmup = boundedInteger(process.env.OBSERVER_BENCH_WARMUP, 3, 0, 20)
-  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
-  if (pkg.dependencies['@drvillo/1bridge-authority'] !== authorityPin
-    || await installedAuthorityDigest() !== authorityBuildSha256) {
-    throw new Error('Installed authority package differs from the pinned clean build')
-  }
-  const observerCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
-  const observerDirty = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim() !== ''
-  if (observerDirty && process.env.OBSERVER_BENCH_ALLOW_DIRTY !== '1') {
-    throw new Error('Commit the observer benchmark runner before recording final samples')
-  }
-  const postgresImage = process.env.OBSERVER_TEST_POSTGRES_IMAGE
-  const postgresImageId = process.env.OBSERVER_TEST_POSTGRES_IMAGE_ID
-  const postgresImageArchitecture = process.env.OBSERVER_TEST_POSTGRES_IMAGE_ARCHITECTURE
-  if (!postgresImage?.startsWith('postgres@sha256:')
-    || !/^sha256:[0-9a-f]{64}$/.test(postgresImageId ?? '')
-    || !postgresImageArchitecture) {
-    throw new Error('Benchmark requires a pinned Postgres image and inspected image provenance')
-  }
+  const provenance = await readBenchmarkProvenance()
 
   const history = await buildGovernanceSource()
   const source = await startGovernanceSource(history)
@@ -119,10 +86,8 @@ test('measure nonempty fixed-target observer catch-up into disposable Postgres',
     }
     const artifact = {
       format: '1bridge.governance.observer-catchup/v1', recordedAt: new Date().toISOString(),
-      observerCommit, observerDirty, authorityDependency: authorityPin, authorityBuildSha256,
-      environment: { node: process.version, platform: platform(), release: release(),
-        cpuModel: cpus()[0]?.model ?? 'unknown', cpuCount: cpus().length,
-        postgres: databaseVersion, postgresImage, postgresImageId, postgresImageArchitecture },
+      ...provenance,
+      environment: { ...provenance.environment, postgres: databaseVersion },
       options: { trials, warmup },
       workload: { feedCount: 1, leaves: history.leaves.length, checkpoints: history.checkpoints.length,
         source: 'in-process loopback HTTP fixture; fresh observer schema per trial' },

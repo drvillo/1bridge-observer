@@ -25,3 +25,4 @@ CREATE SCHEMA observer_poll_invalid;
 CREATE SCHEMA observer_poll_protocol;
 CREATE SCHEMA observer_route;
 CREATE SCHEMA observer_benchmark;
+CREATE SCHEMA observer_scale;
