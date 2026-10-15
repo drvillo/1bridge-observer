@@ -44,6 +44,6 @@ The runner records raw cold-catch-up and immediately repeated up-to-date duratio
 - Create `1bridge-research-artifacts/results/observer-catchup-benchmark.json`.
 - Modify that repository's `README.md`, `docs/governance-research-traceability.md`, `docs/governance-repository-map.md`, and `results/artifact-manifest.json`.
 
-- [ ] With the observer runner committed and clean, run `OBSERVER_BENCH_OUT=<absolute research result path> pnpm bench:observer` from the observer repo. Its recorded source commit must equal `git rev-parse HEAD` and the authority dependency must match the pinned build.
-- [ ] Run the research test written in Task 1 and `pnpm test`; inspect raw sample counts and flags, hash the result into the artifact manifest, and document the narrow measurement boundary.
-- [ ] Commit and push both public branches. Do not call this a deployed, multi-tenant or end-to-end benchmark.
+- [x] With the observer runner committed and clean, run `OBSERVER_BENCH_OUT=<absolute research result path> pnpm bench:observer` from the observer repo. The raw result records source commit `b5a0a04`, the exact authority pin/build digest, and the pinned Postgres image digest/ID.
+- [x] Run the research test written in Task 1 and `pnpm test`; inspect raw sample counts and flags, hash the result into the artifact manifest, and document the narrow measurement boundary. All 13 research checks passed.
+- [x] Commit and push both public branches. Do not call this a deployed, multi-tenant or end-to-end benchmark.
