@@ -47,7 +47,7 @@ export async function pollObserverOnce(store: ObserverStore, config: ObserverCon
     let stagedNext = progress.stagedNextIndex
     let after = progress.checkpointAfter
     let leafPages = 0
-    let checkpointPages = 0
+    let checkpoints = 0
     const requestOptions = () => ({ timeoutMs: Math.max(1, Math.min(10_000, deadline - Date.now())) })
     try {
       if (!target) {
@@ -67,15 +67,20 @@ export async function pollObserverOnce(store: ObserverStore, config: ObserverCon
       }
       if (!claim) throw new TypeError('Observer target claim is missing')
       while (after !== target.checkpointHash) {
-        if (checkpointPages >= budget.maxCheckpoints || Date.now() >= deadline) return { status: 'pending' }
-        const page = await fetchCheckpointPage(config, target.checkpointHash, after, 1, requestOptions())
-        const checkpoint = page.items[0]
-        if (!checkpoint) throw new SourceProtocolError('Missing fixed-target checkpoint')
-        while (stagedNext < checkpoint.signed.statement.size) {
+        if (checkpoints >= budget.maxCheckpoints || Date.now() >= deadline) return { status: 'pending' }
+        const checkpointLimit = Math.min(16, budget.maxCheckpoints - checkpoints)
+        const page = await fetchCheckpointPage(config, target.checkpointHash, after,
+          checkpointLimit, requestOptions())
+        const lastCheckpoint = page.items.at(-1)
+        if (!lastCheckpoint) throw new SourceProtocolError('Missing fixed-target checkpoint')
+        if (lastCheckpoint.signed.statement.size > target.signedCheckpoint.statement.size) {
+          throw new SourceProtocolError('Checkpoint exceeds fixed target size')
+        }
+        while (stagedNext < lastCheckpoint.signed.statement.size) {
           if (leafPages >= budget.maxLeafPages || Date.now() >= deadline) return { status: 'pending' }
           const leaves = await fetchLeafPage(config, target.checkpointHash, stagedNext,
             target.signedCheckpoint.statement.size,
-            Math.min(64, checkpoint.signed.statement.size - stagedNext), requestOptions())
+            Math.min(64, lastCheckpoint.signed.statement.size - stagedNext), requestOptions())
           const staged = await stageObserverBatch(store, claim,
             { start: stagedNext, leaves: leaves.items, checkpoints: [] })
           claim = staged.claim
@@ -83,10 +88,10 @@ export async function pollObserverOnce(store: ObserverStore, config: ObserverCon
           leafPages++
         }
         const staged = await stageObserverBatch(store, claim,
-          { start: stagedNext, leaves: [], checkpoints: [checkpoint] })
+          { start: stagedNext, leaves: [], checkpoints: page.items })
         claim = staged.claim
-        after = checkpoint.hash
-        checkpointPages++
+        after = lastCheckpoint.hash
+        checkpoints += page.items.length
       }
       try { return { status: 'accepted', snapshot: await acceptObserverTarget(store, claim) } }
       catch (error) {

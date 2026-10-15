@@ -34,9 +34,11 @@ describe('durable bounded source poll', () => {
       const partial = await inspector.query(
         'SELECT staged_next_index, accepted_size, active_attempt_id FROM observer_poll.observer_cursors')
       expect(partial.rows[0]).toMatchObject({ staged_next_index: '1', accepted_size: '0' })
+      expect((await inspector.query('SELECT count(*) AS total FROM observer_poll.observer_staged_checkpoints')).rows[0].total)
+        .toBe('2')
       const attemptId = partial.rows[0].active_attempt_id
       const leafLimited = await pollObserverOnce(store, settings, 'poll-worker',
-        { maxLeafPages: 1, maxCheckpoints: 16, maxMs: 20_000 })
+        { maxLeafPages: 1, maxCheckpoints: 1, maxMs: 20_000 })
       expect(leafLimited).toMatchObject({ status: 'pending' })
       expect((await inspector.query('SELECT staged_next_index FROM observer_poll.observer_cursors')).rows[0].staged_next_index)
         .toBe('2')
@@ -53,6 +55,29 @@ describe('durable bounded source poll', () => {
       expect(again).toMatchObject({ status: 'up_to_date' })
       expect((await inspector.query('SELECT version FROM observer_poll.observer_cursors')).rows[0].version)
         .toBe(accepted.rows[0].version)
+    } finally { await store.close(); await source.close() }
+  })
+
+  it('resumes leaves staged before a multi-checkpoint page completes', async () => {
+    const history = await buildGovernanceSource()
+    const source = await startGovernanceSource(history, undefined, undefined, { leafPageSize: 1 })
+    const store = openObserverStore(databaseUrl, 'observer_poll_paged_leaves')
+    try {
+      await installObserverSchema(store)
+      const settings = { ...config(history, source.baseUrl), databaseSchema: 'observer_poll_paged_leaves' }
+      const first = await pollObserverOnce(store, settings, 'paged',
+        { maxLeafPages: 1, maxCheckpoints: 16, maxMs: 20_000 })
+      expect(first.status).toBe('pending')
+      expect((await inspector.query(`SELECT staged_next_index, accepted_size
+        FROM observer_poll_paged_leaves.observer_cursors`)).rows[0])
+        .toEqual({ staged_next_index: '1', accepted_size: '0' })
+      expect((await inspector.query(`SELECT count(*) AS total
+        FROM observer_poll_paged_leaves.observer_staged_checkpoints`)).rows[0].total)
+        .toBe('0')
+      const second = await pollObserverOnce(store, settings, 'paged',
+        { maxLeafPages: 16, maxCheckpoints: 16, maxMs: 20_000 })
+      expect(second).toMatchObject({ status: 'accepted', snapshot: { size: 7 } })
+      expect(source.calls.filter(url => url.pathname.endsWith('/checkpoints'))).toHaveLength(2)
     } finally { await store.close(); await source.close() }
   })
 
@@ -73,6 +98,11 @@ describe('durable bounded source poll', () => {
       expect(await readAcceptedObserverReplay(store, settings.feedId))
         .toMatchObject({ checkpointHash: fixed.checkpointHash, size: history.leaves.length })
       expect(source.calls.some(url => url.pathname.endsWith('/head'))).toBe(false)
+      expect(source.calls.filter(url => url.pathname.endsWith('/checkpoints'))).toHaveLength(1)
+      expect((await inspector.query(`SELECT
+        (SELECT count(*) FROM observer_fixed_target.observer_leaves) AS leaves,
+        (SELECT count(*) FROM observer_fixed_target.observer_checkpoints) AS checkpoints`)).rows[0])
+        .toEqual({ leaves: '7', checkpoints: '8' })
     } finally { await store.close(); await source.close() }
   })
 

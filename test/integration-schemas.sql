@@ -19,6 +19,7 @@ CREATE SCHEMA observer_receipt_partial;
 CREATE SCHEMA observer_receipt_store;
 CREATE SCHEMA observer_report_route;
 CREATE SCHEMA observer_poll;
+CREATE SCHEMA observer_poll_paged_leaves;
 CREATE SCHEMA observer_poll_unavailable;
 CREATE SCHEMA observer_poll_invalid;
 CREATE SCHEMA observer_poll_protocol;

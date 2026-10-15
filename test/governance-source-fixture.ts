@@ -191,6 +191,7 @@ export interface GovernanceSourceFaults {
   skipLeaf?: boolean
   changeLastLeaf?: boolean
   unavailableLeaves?: boolean
+  leafPageSize?: number
 }
 
 export async function startGovernanceSource(history: Pick<GovernanceSourceHistory,
@@ -231,7 +232,7 @@ export async function startGovernanceSource(history: Pick<GovernanceSourceHistor
       }
       const offset = faults.skipLeaf && start === history.leaves.length - 1 ? 1 : 0
       const selected = history.leaves.slice(start + offset,
-        Math.min(start + limit + offset, candidate.statement.size))
+        Math.min(start + Math.min(limit, faults.leafPageSize ?? limit) + offset, candidate.statement.size))
       body = { version: 1, target, start,
         items: selected.map((leaf, index) => authority.encodeBase64Url(
           faults.changeLastLeaf && start + offset + index === history.leaves.length - 1
