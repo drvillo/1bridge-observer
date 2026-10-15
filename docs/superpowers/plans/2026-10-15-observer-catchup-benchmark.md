@@ -32,10 +32,10 @@ The runner records raw cold-catch-up and immediately repeated up-to-date duratio
 
 - [x] Make `vitest.benchmark.config.ts` include only `test/*.benchmark.ts` and use a 120-second test timeout.
 - [x] Add `CREATE SCHEMA observer_benchmark;` to the shared disposable schema fixture. Let `test/store.integration.test.sh` accept an optional Vitest config filename, defaulting to `vitest.integration.config.ts`.
-- [x] Add `bench:observer` script as `bash test/store.integration.test.sh vitest.benchmark.config.ts`.
+- [x] Add `bench:observer` with a pinned Postgres 17 image digest through the existing disposable wrapper, and record the resolved image ID and architecture alongside the server version. Ordinary integration tests keep their existing default image reference.
 - [x] In the benchmark test, reject a missing/relative `OBSERVER_BENCH_OUT` and nonclean Git source. Generate one signed seven-leaf history, start one loopback source, derive the signed fixed head, and read the Postgres server version before samples. A dirty-tree override is available only for smoke runs and is recorded in the output.
 - [x] For each of three warmups and 30 retained trials, reset `observer_benchmark` and install its schema outside timing. Time one `pollObserverOnce` fixed-target call and one immediately repeated call separately. Require statuses `accepted` and `up_to_date`; query the persisted leaf/checkpoint counts and accepted head outside timing. Store only successful retained trials. Generate no extra crypto keys inside timing.
-- [x] Run a two-trial smoke with `OBSERVER_BENCH_TRIALS=2 OBSERVER_BENCH_WARMUP=0` and an absolute temporary output path. The first run exposed Vitest's missing `import.meta.resolve`; the runner now hashes the installed package via the repo's `node_modules` path, and the second run passed with 15 cold HTTP requests and zero hot requests per sample.
+- [x] Run a two-trial smoke with `OBSERVER_BENCH_TRIALS=2 OBSERVER_BENCH_WARMUP=0` and an absolute temporary output path. The first run exposed Vitest's missing `import.meta.resolve`; the runner now hashes the installed package via the repo's `node_modules` path. A later pinned-image smoke also passed.
 - [x] Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:integration`, `pnpm build`, `git diff --check`; commit the runner. The opt-in benchmark is excluded from the normal unit/integration suites. Before commit, 86 unit and 30 ordinary integration tests passed; the running-source opt-in test was skipped.
 
 ## Task 3: Produce and review public raw evidence

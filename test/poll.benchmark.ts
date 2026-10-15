@@ -53,6 +53,14 @@ test('measure nonempty fixed-target observer catch-up into disposable Postgres',
   if (observerDirty && process.env.OBSERVER_BENCH_ALLOW_DIRTY !== '1') {
     throw new Error('Commit the observer benchmark runner before recording final samples')
   }
+  const postgresImage = process.env.OBSERVER_TEST_POSTGRES_IMAGE
+  const postgresImageId = process.env.OBSERVER_TEST_POSTGRES_IMAGE_ID
+  const postgresImageArchitecture = process.env.OBSERVER_TEST_POSTGRES_IMAGE_ARCHITECTURE
+  if (!postgresImage?.startsWith('postgres@sha256:')
+    || !/^sha256:[0-9a-f]{64}$/.test(postgresImageId ?? '')
+    || !postgresImageArchitecture) {
+    throw new Error('Benchmark requires a pinned Postgres image and inspected image provenance')
+  }
 
   const history = await buildGovernanceSource()
   const source = await startGovernanceSource(history)
@@ -114,7 +122,7 @@ test('measure nonempty fixed-target observer catch-up into disposable Postgres',
       observerCommit, observerDirty, authorityDependency: authorityPin, authorityBuildSha256,
       environment: { node: process.version, platform: platform(), release: release(),
         cpuModel: cpus()[0]?.model ?? 'unknown', cpuCount: cpus().length,
-        postgres: databaseVersion },
+        postgres: databaseVersion, postgresImage, postgresImageId, postgresImageArchitecture },
       options: { trials, warmup },
       workload: { feedCount: 1, leaves: history.leaves.length, checkpoints: history.checkpoints.length,
         source: 'in-process loopback HTTP fixture; fresh observer schema per trial' },
