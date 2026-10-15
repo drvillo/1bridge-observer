@@ -577,6 +577,17 @@ export async function acceptObserverTarget(store: ObserverStore, claim: Observer
       `UPDATE observer_targets SET status='accepted', finished_at=clock_timestamp()
        WHERE feed_id=$1 AND attempt_id=$2`, [claim.feedId, claim.attemptId])
     await client.query(
+      `UPDATE observer_findings AS finding SET resolved_at=clock_timestamp()
+       FROM observer_targets AS target
+       JOIN observer_checkpoints AS checkpoint
+         ON checkpoint.feed_id=target.feed_id
+        AND checkpoint.statement_hash=target.target_hash
+        AND checkpoint.signed_checkpoint=target.signed_checkpoint
+       WHERE finding.feed_id=$1 AND finding.finding_type='source_nonconformance'
+         AND finding.resolved_at IS NULL
+         AND target.feed_id=finding.feed_id AND target.attempt_id=finding.attempt_id`,
+      [claim.feedId])
+    await client.query(
       `UPDATE observer_cursors SET accepted_size=$2, accepted_checkpoint_hash=$3,
          staged_next_index=$2, active_attempt_id=NULL, staged_checkpoint_tail_hash=NULL,
          staged_checkpoint_tail_position=NULL, version=version+1,

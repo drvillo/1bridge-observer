@@ -149,7 +149,7 @@ describe('durable bounded source poll', () => {
     } finally { await store.close(); await source.close() }
   })
 
-  it('retains source nonconformance without treating it as a cryptographic finding', async () => {
+  it('retains a recovered source finding and marks it resolved after accepting its exact target', async () => {
     const history = await buildGovernanceSource()
     const faults: GovernanceSourceFaults = { omitGenesis: true }
     const source = await startGovernanceSource(history, undefined, undefined, faults)
@@ -181,8 +181,12 @@ describe('durable bounded source poll', () => {
       const caughtUp = await pollObserverOnce(store, settings, 'poll-worker',
         { maxLeafPages: 16, maxCheckpoints: 16, maxMs: 20_000 })
       expect(caughtUp).toMatchObject({ status: 'accepted', snapshot: { size: 7 } })
-      expect((await inspector.query('SELECT resolved_at FROM observer_poll_protocol.observer_findings')).rows[0].resolved_at)
-        .toBeNull()
+      const recovered = await inspector.query(
+        'SELECT finding_type, evidence_bytes, resolved_at FROM observer_poll_protocol.observer_findings')
+      expect(recovered.rows).toHaveLength(1)
+      expect(recovered.rows[0].finding_type).toBe('source_nonconformance')
+      expect(recovered.rows[0].evidence_bytes).toEqual(findings.rows[0].evidence_bytes)
+      expect(recovered.rows[0].resolved_at).not.toBeNull()
     } finally { await store.close(); await source.close() }
   })
 })
