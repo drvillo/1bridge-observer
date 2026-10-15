@@ -10,10 +10,11 @@ const databaseUrl = process.env.OBSERVER_TEST_DATABASE_URL
 const sourceUrl = process.env.OBSERVER_LIVE_SOURCE_BASE_URL
 const publisherSpki = process.env.OBSERVER_LIVE_REGISTRY_PUBLIC_KEY
 const genesis = process.env.OBSERVER_LIVE_REGISTRY_GENESIS
-const expectedFeedId = process.env.OBSERVER_LIVE_FEED_ID
-const expectedAnchorPin = process.env.OBSERVER_LIVE_ANCHOR_PIN
+const expectedFeeds = process.env.OBSERVER_LIVE_FEEDS
+  ? JSON.parse(process.env.OBSERVER_LIVE_FEEDS) as { feedId: string; anchorPin: string }[]
+  : []
 const enabled = Boolean(databaseUrl && sourceUrl && publisherSpki && genesis
-  && expectedFeedId && expectedAnchorPin)
+  && expectedFeeds.length > 0)
 
 const inspector = enabled ? new pg.Pool({ connectionString: databaseUrl, max: 1 }) : null
 afterAll(async () => inspector?.end())
@@ -36,30 +37,29 @@ it.skipIf(!enabled)('pulls live 1Bridge routes into observer-owned Postgres and 
       result = await pollSharedObserverOnce(store, config, 'live-2', budget)
     }
     expect(['accepted', 'up_to_date']).toContain(result.registry.status)
-    expect(result.feeds).toContainEqual({ feedId: expectedFeedId,
-      status: expect.stringMatching(/^(accepted|up_to_date)$/) })
-
-    const persisted = await inspector!.query(
-      `SELECT f.feed_id, f.anchor_pin, c.accepted_size
-       FROM observer_live_source.observer_feeds f
-       JOIN observer_live_source.observer_cursors c USING (feed_id)
-       WHERE f.feed_id = $1`,
-      [expectedFeedId],
-    )
-    expect(persisted.rows).toHaveLength(1)
-    expect(persisted.rows[0]).toMatchObject({ feed_id: expectedFeedId,
-      anchor_pin: expectedAnchorPin })
-    expect(Number(persisted.rows[0].accepted_size)).toBeGreaterThan(0)
-
     const signer = await authority.generateSigningKey()
     const report = await publishAggregateCoverage(store, config, signer)
-    const proof = await readAggregateFeedStatusProof(store, config, signer.publicKey,
-      report.reportHash, expectedFeedId!)
     const { publisherKey } = await verifyRegistryPin(config)
-    expect(proof?.status.status).toBe('verified')
-    expect(await authority.verifyAggregateFeedStatus(report.signedReport, proof!,
-      signer.publicKey, publisherKey, result.registryHash,
-      expectedFeedId!, expectedAnchorPin!)).toBe(true)
+    for (const { feedId, anchorPin } of expectedFeeds) {
+      expect(result.feeds).toContainEqual({ feedId,
+        status: expect.stringMatching(/^(accepted|up_to_date)$/) })
+      const persisted = await inspector!.query(
+        `SELECT f.feed_id, f.anchor_pin, c.accepted_size
+         FROM observer_live_source.observer_feeds f
+         JOIN observer_live_source.observer_cursors c USING (feed_id)
+         WHERE f.feed_id = $1`,
+        [feedId],
+      )
+      expect(persisted.rows).toHaveLength(1)
+      expect(persisted.rows[0]).toMatchObject({ feed_id: feedId, anchor_pin: anchorPin })
+      expect(Number(persisted.rows[0].accepted_size)).toBeGreaterThan(0)
+      const proof = await readAggregateFeedStatusProof(store, config, signer.publicKey,
+        report.reportHash, feedId)
+      expect(proof?.status.status).toBe('verified')
+      expect(await authority.verifyAggregateFeedStatus(report.signedReport, proof!,
+        signer.publicKey, publisherKey, result.registryHash,
+        feedId, anchorPin)).toBe(true)
+    }
   } finally {
     await store.close()
   }
