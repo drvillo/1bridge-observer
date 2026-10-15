@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:integration": "bash test/store.integration.test.sh",
     "bench:observer": "OBSERVER_TEST_POSTGRES_IMAGE=postgres@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232 bash test/store.integration.test.sh vitest.benchmark.config.ts",
-    "bench:scale": "OBSERVER_TEST_POSTGRES_IMAGE=postgres@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232 bash test/store.integration.test.sh vitest.scale.config.ts"
+    "bench:scale": "OBSERVER_TEST_POSTGRES_IMAGE=postgres@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232 bash test/store.integration.test.sh vitest.scale.config.ts",
+    "bench:registry-proof": "OBSERVER_TEST_POSTGRES_IMAGE=postgres@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232 bash test/store.integration.test.sh vitest.registry-proof.config.ts"
   },
   "dependencies": {
     "@drvillo/1bridge-authority": "github:drvillo/1bridge-authority#b48c9989b59f243b22c655b3d55b4ce0ae814f06",
