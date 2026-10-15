@@ -25,6 +25,8 @@ pnpm build
 
 `pnpm test:integration` creates a disposable Postgres 17 container and removes it when the run finishes.
 
+To check the same suite against a running **local** Supabase Postgres container, set `OBSERVER_SUPABASE_CONTAINER` to its container name and `OBSERVER_SUPABASE_DATABASE_URL` to its local Postgres URI, then run `bash test/store.supabase.test.sh`. The script creates and removes a disposable database in that container. `bash test/schema.supabase.test.sh` checks fresh and repeat schema installation there. These commands are for local test instances, not production databases.
+
 ### 2. Create the database
 
 Provision Postgres that you operate. A Supabase project works. Copy the connection string from [Supabase `DATABASE_URL`](#supabase-database_url).
