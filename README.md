@@ -79,6 +79,8 @@ What each name means, and where the value comes from, is in [Environment variabl
 
 `vercel.json` calls `GET /api/shared-poll` daily at 08:00 UTC. Call that route yourself with the same bearer token to catch up. Each call has a 45-second work budget, at most 12 registry entry or checkpoint pages, and at most 12 round-robin feeds. Poll state, leases, and accepted evidence stay in Postgres across restarts. An unavailable feed stays pending and leaves its peers running. Vercel does not retry a failed cron run. Read the report checkpoint and time when you want freshness. The daily Hobby trigger is not a bound on observation lag.
 
+On [Vercel Hobby](https://vercel.com/docs/cron-jobs/usage-and-pricing), cron runs at most once per day and may start anywhere within its scheduled hour. This route declares a 60-second [function duration](https://vercel.com/docs/functions/configuring-functions/duration), with 45 seconds reserved for polling. With a stable catalog of more than 12 feeds, even an error-free observer needs at least `ceil(feed count / 12)` daily runs to select every feed once; registry backlog, source outages and retries can extend that further. A 24-hour customer review threshold therefore means **an old report is labeled stale and cannot complete strict review**, not that Hobby guarantees a new witness every 24 hours. The independent operator can invoke the protected route additional times for catch-up or deploy on a plan with a more frequent cron. Neither choice changes 1Bridge release availability.
+
 `SOURCE_BASE_URL` is an HTTPS origin with no credentials, path, query, or fragment. HTTP loopback is available in tests. Endpoint and page limits are in [the shared observer contract](docs/shared-observer-plan.md). `GET /api/health` reports process liveness.
 
 ## Supabase `DATABASE_URL`
@@ -222,7 +224,7 @@ The database keeps accepted and staged global registry entries and checkpoints, 
 The authority dependency is pinned in `package.json` to a reviewed Git commit. `pnpm-workspace.yaml` allows that dependency's Git `prepare` build. v1–v3 migrations stay frozen. `schema-v4.sql` adds the shared registry and aggregate tables.
 
 - `bash test/schema.sql.test.sh` checks the v1 DDL against disposable Postgres.
-- `pnpm test:integration` covers fresh installs, v1 and v2 upgrades, and shared workflows, including a loopback HTTP source with two feeds, bounded catch-up, outage recovery, and a missing-checkpoint finding.
+- `pnpm test:integration` covers fresh installs, v1 and v2 upgrades, and shared workflows, including a loopback HTTP source with two feeds, a 25-feed rotating scheduler across store restarts, bounded catch-up, outage recovery, and a missing-checkpoint finding.
 - Optional Supabase scripts run against a disposable Supabase Postgres database you supply (`OBSERVER_SUPABASE_CONTAINER` and `OBSERVER_SUPABASE_DATABASE_URL`).
 
 To check a live 1Bridge source:

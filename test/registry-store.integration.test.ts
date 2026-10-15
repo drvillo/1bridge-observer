@@ -6,7 +6,7 @@ import { loadSharedObserverConfig, verifyRegistryPin } from '../src/lib/config'
 import { installObserverSchema, openObserverStore } from '../src/lib/store'
 import { acceptRegistryTarget, beginRegistryTarget, claimRegistryLease,
   initializeRegistry, readRegistryFeeds, readRegistryProgress, releaseRegistryLease,
-  selectRegistryFeedBatch,
+  selectRegistryFeedBatch, type RegistryFeed,
   stageRegistryCheckpoint, stageRegistryEntries } from '../src/lib/registry-store'
 
 const databaseUrl = process.env.OBSERVER_TEST_DATABASE_URL
@@ -81,5 +81,29 @@ describe('durable shared registry cursor', () => {
         .toBe('4')
       await releaseRegistryLease(store, next)
     } finally { await store.close() }
+  })
+
+  it('rotates a 25-feed catalog across daily 12-feed budgets and store restarts', async () => {
+    const pin = await verifyRegistryPin(config)
+    const schema = 'observer_registry_rotation'
+    const anchor = authority.parseCanonical(authority.decodeBase64Url(vector.entries[0])) as unknown as
+      Extract<authority.RegistryEntry, { kind: 'feed_anchor' }>
+    const feeds: RegistryFeed[] = Array.from({ length: 25 }, (_, index) => ({
+      feedId: (index + 1).toString(16).padStart(64, '0'),
+      anchorPin: anchor.anchorPin, signedAnchor: anchor.signedAnchor, advertisedHead: null,
+    }))
+    const selected: string[][] = []
+    for (let run = 0; run < 3; run++) {
+      const store = openObserverStore(databaseUrl, schema)
+      try {
+        await installObserverSchema(store)
+        await initializeRegistry(store, pin)
+        selected.push((await selectRegistryFeedBatch(store, feeds, 12)).map(feed => feed.feedId))
+      } finally { await store.close() }
+    }
+    expect(selected[0]).toEqual(feeds.slice(0, 12).map(feed => feed.feedId))
+    expect(selected[1]).toEqual(feeds.slice(12, 24).map(feed => feed.feedId))
+    expect(selected[2]).toEqual([feeds[24]!.feedId, ...feeds.slice(0, 11).map(feed => feed.feedId)])
+    expect(new Set(selected.flat()).size).toBe(feeds.length)
   })
 })
