@@ -1,6 +1,8 @@
+> Historical design/evidence for the retired v1 profile. Its routes and replay runtime have been removed; its migration files remain. See README.md and the compact registry witness plan for current runtime. Do not execute this obsolete plan.
+
 # Multi-tenant pull observer implementation plan
 
-Implementation contract and verification record. The shared profile is additive; the original single-feed routes remain available separately.
+Superseded implementation contract and verification record. The original single-feed routes are no longer available.
 
 **Goal:** Run one independent Vercel observer for every 1Bridge plan, discovering all pseudonymous workspace feeds from a single pinned public registry and reporting exact verified and pending coverage.
 

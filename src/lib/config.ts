@@ -1,28 +1,11 @@
 import {
-  authorityStateSnapshot,
   decodeBase64Url,
   importSigningPublicKey,
   parseCanonical,
   registryCheckpointHash,
-  verifyAuthorityAnchor,
   verifyRegistryCheckpoint,
-  type AuthoritySnapshot,
-  type SignedAuthorityAnchor,
   type SignedRegistryCheckpoint,
 } from '@drvillo/1bridge-authority'
-
-export interface ObserverConfig {
-  sourceBaseUrl: string
-  feedId: string
-  anchorPin: string
-  signedAnchor: string
-  databaseUrl: string
-  databaseSchema: string
-  cronSecret: string
-}
-
-export type ReportReadConfig = Pick<ObserverConfig,
-  'feedId' | 'anchorPin' | 'databaseUrl' | 'databaseSchema'>
 
 export interface SharedReportReadConfig {
   databaseUrl: string
@@ -38,44 +21,7 @@ export interface SharedObserverConfig extends SharedReportReadConfig {
 
 type Environment = Record<string, string | undefined>
 
-export function loadObserverConfig(env: Environment): ObserverConfig {
-  const sourceBaseUrl = parseSourceUrl(env.SOURCE_BASE_URL, env.NODE_ENV)
-  const report = loadReportReadConfig(env)
-  const signedAnchor = env.SIGNED_ANCHOR
-  try {
-    if (!signedAnchor || decodeBase64Url(signedAnchor, 16384).length === 0) {
-      throw new TypeError('Missing signed anchor')
-    }
-  } catch {
-    throw new Error('Invalid SIGNED_ANCHOR')
-  }
-
-  const cronSecret = env.CRON_SECRET
-  if (!cronSecret || Buffer.byteLength(cronSecret, 'utf8') < 32) {
-    throw new Error('Invalid CRON_SECRET')
-  }
-  if (env.REPORT_READ_TOKEN && env.REPORT_READ_TOKEN === cronSecret) {
-    throw new Error('Report reader and cron credentials must be distinct')
-  }
-
-  return { sourceBaseUrl, ...report, signedAnchor, cronSecret }
-}
-
-export function loadReportReadConfig(env: Environment): ReportReadConfig {
-  const feedId = env.FEED_ID
-  if (!feedId || !/^[0-9a-f]{64}$/.test(feedId)) {
-    throw new Error('Invalid FEED_ID')
-  }
-
-  const anchorPin = env.ANCHOR_PIN
-  if (!anchorPin || !/^[0-9a-f]{64}$/.test(anchorPin)) {
-    throw new Error('Invalid ANCHOR_PIN')
-  }
-
-  return { feedId, anchorPin, ...loadDatabaseConfig(env) }
-}
-
-function loadDatabaseConfig(env: Environment): Pick<ObserverConfig, 'databaseUrl' | 'databaseSchema'> {
+function loadDatabaseConfig(env: Environment): Pick<SharedReportReadConfig, 'databaseUrl' | 'databaseSchema'> {
   const databaseUrl = env.DATABASE_URL
   if (!databaseUrl) {
     throw new Error('Invalid DATABASE_URL')
@@ -135,17 +81,6 @@ export async function verifyRegistryPin(config: SharedReportReadConfig): Promise
   }
   return { publisherKey, signedGenesis,
     genesisHash: await registryCheckpointHash(signedGenesis.statement) }
-}
-
-export async function verifyObserverAnchor(config: ObserverConfig): Promise<AuthoritySnapshot> {
-  const serialized = decodeBase64Url(config.signedAnchor, 16384)
-  const signed = parseCanonical(serialized) as unknown as SignedAuthorityAnchor
-  const state = await verifyAuthorityAnchor(signed, config.anchorPin)
-  const snapshot = authorityStateSnapshot(state)
-  if (snapshot.feedId !== config.feedId) {
-    throw new Error('Configured FEED_ID does not match the verified authority anchor')
-  }
-  return snapshot
 }
 
 function parseSourceUrl(value: string | undefined, nodeEnv: string | undefined): string {

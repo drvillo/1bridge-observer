@@ -1,3 +1,5 @@
+> Historical design/evidence for the retired v1 profile. See README.md and the compact registry witness plan for current runtime.
+
 # Observer runtime bootstrap plan
 
 > **For agentic workers:** Apply Superpowers test-driven development and subagent-driven development, then independent specification and quality review. This is the first independently tested observer increment, not observer readiness.

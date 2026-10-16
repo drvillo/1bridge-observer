@@ -1,3 +1,5 @@
+> Historical design/evidence for the retired v1 profile. See README.md and the compact registry witness plan for current runtime.
+
 # Bounded durable pull increment
 
 Status: poll core and protected invocation route implemented and under verification, 2026-10-14. The application has no governance publisher yet; the HTTP source is a test fixture. This increment cannot claim a deployed independent observer or hidden-tail detection.

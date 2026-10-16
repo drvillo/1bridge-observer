@@ -1,12 +1,14 @@
 # 1Bridge independent observer
 
-This public TypeScript/Next.js service pulls a signed pseudonymous governance [registry](#registry) and its advertised [feed](#feed) evidence from 1Bridge. It stores accepted prefixes in observer-owned Postgres, replays authority and action signatures with [the authority library](https://github.com/drvillo/1bridge-authority), and signs aggregate reports that mark each feed verified or pending.
+> **Current shared profile:** the daily Vercel cron runs the version-2 compact global registry witness. The earlier per-feed routes and reports have been retired. A witnessed global root does not prove that a particular customer action was included. See the [compact witness plan](docs/superpowers/plans/2026-10-16-compact-registry-witness.md).
 
-The service does not gate a 1Bridge operation or release. A later published signed action that cites a witnessed predecessor exposes a suppressed gap during catch-up. An event hidden from every independent witness and receipt holder stays invisible here.
+This public TypeScript/Next.js service pulls the latest signed global governance [registry](#registry) head and, when it advances, a Merkle consistency proof from 1Bridge. It stores accepted roots and findings in observer-owned Postgres, then signs a compact global witness with [the authority library](https://github.com/drvillo/1bridge-authority). It does not fetch tenant feeds or registry entries on the current shared cron path.
 
-One [observer operator](#observer-operator) deploys the shared profile for every plan. That deployment has no per-customer ID, token, source URL, or feed list. Customer-operated Enterprise observers are a later profile. The [monitored deployment](#monitored-deployment) has to publish pseudonymous verification envelopes with no private payloads. Set `SOURCE_BASE_URL` to a deployment that serves the public registry and feed routes before you claim coverage. Role names used below are collected in [Roles and terms](#appendix-roles-and-terms).
+The service does not gate a 1Bridge operation or release. A later root inconsistent with a witnessed Merkle prefix exposes tampering. A compact witness cannot inspect action citations: customer-held receipts and 1Bridge's customer-side feed-continuation verifier are needed to detect a suppressed action within a consistent registry branch. An event hidden from every independent witness and receipt holder stays invisible.
 
-Routine tests use a local synthetic source and a separate Postgres. An opt-in test can check a running 1Bridge Next source. A green local run does not show that a deployment is watching production.
+One [observer operator](#observer-operator) deploys the shared profile for every plan. That deployment has no per-customer ID, token, source URL, or feed list. Customer-operated Enterprise observers are a later profile. The [monitored deployment](#monitored-deployment) has to publish pseudonymous verification envelopes with no private payloads. Set `SOURCE_BASE_URL` to a deployment that serves the public registry head and consistency routes before you claim coverage. Role names used below are collected in [Roles and terms](#appendix-roles-and-terms).
+
+Routine tests use a local synthetic source and a separate Postgres. The opt-in live-source test can check a running 1Bridge Next source; the 1Bridge app also has a local cross-repository fixture using its registry readers over HTTP. A green local run does not show that a deployment is watching production.
 
 ## Set up the shared profile
 
@@ -44,7 +46,7 @@ CREATE SCHEMA observer AUTHORIZATION postgres;
 
 The pooler username looks like `postgres.[project-ref]`. The database role is the part before the dot, `postgres`, unless you created another role. That role needs `USAGE` and `CREATE` on the schema. Owning the schema provides both.
 
-v1–v4 migrations then run in one transaction and check the installed catalog fingerprint.
+v1–v5 migrations run in one transaction and check the installed catalog fingerprint. The v5 tables hold the compact witness cursor, signed reports and bounded findings; legacy v1–v4 rows remain historical.
 
 ### 3. Pin the registry
 
@@ -55,7 +57,7 @@ Get two values from that publisher on a channel outside the host you will poll. 
 - `REGISTRY_PUBLISHER_PUBLIC_KEY`: their ECDSA P-256 public key as [SPKI](#spki), unpadded base64url.
 - `REGISTRY_SIGNED_GENESIS`: the [signed empty registry genesis](#signed-empty-registry-genesis), in the same encoding.
 
-Record those bytes before you accept a copy from the [monitored deployment](#monitored-deployment). The authority library checks the genesis signature under that [pin](#pin), then checks later [registry checkpoints](#registry-checkpoint) along the same chain.
+Record those bytes before you accept a copy from the [monitored deployment](#monitored-deployment). The authority library checks the genesis signature under that [pin](#pin). Each later accepted head must have a valid publisher signature and a Merkle consistency proof from the last accepted root; the compact poll does not replay skipped checkpoint metadata.
 
 ### 4. Generate the observer signing key
 
@@ -73,21 +75,23 @@ Local Next.js reads `.env.local` from the repo root. Copy `.env.example` to that
 
 On Vercel, open the project and go to **Settings → Environment Variables**. Add each name for Production. Redeploy after saving so the functions pick up the values.
 
-You generate `CRON_SECRET` (`openssl rand -base64 32`). It has to be at least 32 UTF-8 bytes. Vercel Cron reads that project variable and calls `GET /api/shared-poll` with `Authorization: Bearer <CRON_SECRET>`.
+You generate `CRON_SECRET` (`openssl rand -base64 32`). It has to be at least 32 UTF-8 bytes. Vercel Cron reads that project variable and calls `GET /api/registry-witness/poll` with `Authorization: Bearer <CRON_SECRET>`.
 
 What each name means, and where the value comes from, is in [Environment variables](#environment-variables).
 
 ### 6. Deploy
 
-`vercel.json` calls `GET /api/shared-poll` daily at 08:00 UTC and configures a private `observer-catchup` [Vercel Queues push consumer](https://vercel.com/docs/queues). Keep [system environment variables](https://vercel.com/docs/environment-variables/system-environment-variables) exposed so runtime `VERCEL=1` enables sends; a protected poll response reports `continuationStatus` as `queued`, `not_needed`, `local_only` or `send_failed`. On Vercel, a cron/manual poll schedules another bounded poll when a catalog sweep remains or durable staging/acceptance advanced; a full no-progress sweep stops the chain. At most 128 queue follow-ups are sent per seed, after which the next cron/manual call may resume. The daily poll signs a fresh report timestamp; queued polls sign a new report only after accepted coverage or findings change, so staging pages do not each store another full snapshot. The queue carries only scheduling counters. It is a wake-up, while Postgres retains the cursor, signed evidence, leases and findings; lost, duplicate and expired messages do not replace that state. The queue feature is in public beta and [available on Hobby](https://vercel.com/docs/queues); verify its push trigger on your deployed project. Locally the same protected poll route runs without queue delivery. Call that route yourself with the same bearer token to catch up. Each call has a 45-second work budget, at most 12 registry entry/checkpoint pages, at most 12 checkpoint **items** per selected feed, and at most 12 round-robin feeds. The feed poller fetches up to 16 consecutive checkpoints in one HTTP page when its item budget permits, but the production route's 12-item budget remains. An unavailable feed stays pending and leaves its peers running. Vercel does not retry a failed cron run. Read the report checkpoint and time when you want freshness. The daily Hobby trigger is not a bound on observation lag.
+`vercel.json` calls `GET /api/registry-witness/poll` daily at 08:00 UTC. One invocation requests the latest signed head and, if it changed, one consistency proof. It signs a fresh report timestamp after an unchanged valid head or a retained protocol finding. A source outage returns `unavailable`, preserves the last accepted root, and never blocks 1Bridge. Invoke the protected route manually with the same bearer token when you need another observation. Public `GET /api/registry-witness/latest` returns the latest signed global report. Pin the observer public key independently before trusting it.
 
-On [Vercel Hobby](https://vercel.com/docs/cron-jobs/usage-and-pricing), cron runs at most once per day and may start anywhere within its scheduled hour. This route declares a 60-second [function duration](https://vercel.com/docs/functions/configuring-functions/duration), with 45 seconds reserved for polling. With a stable catalog of more than 12 feeds, even an error-free observer needs at least `ceil(feed count / 12)` daily runs to select every feed once; registry backlog, source outages and retries can extend that further. A 24-hour customer review threshold therefore means **an old report is labeled stale and cannot complete strict review**, not that Hobby guarantees a new witness every 24 hours. The independent operator can invoke the protected route additional times for catch-up or deploy on a plan with a more frequent cron. Neither choice changes 1Bridge release availability.
+The observer retains bounded evidence for parsed conflicting heads and proofs, and a typed finding when parsing fails. A rejected consistency path for a candidate head resolves when that same head is later accepted with a valid path; signature failures and rollbacks remain findings for operator review. The authority report signer accepts at most 10,000 unresolved finding IDs. A malicious source that drives beyond that bound requires operator investigation and a subsequent protocol revision; it cannot block 1Bridge operations. Do not describe the last signed report as current while its finding set or timestamp is stale.
 
-1Bridge currently signs one checkpoint for each governed leaf. A selected feed with 100 new checkpoints therefore needs at least nine invocations at the production route's 12-item budget, even though checkpoint page batching reduces HTTP requests. The [clean 100/1,000/10,000-leaf local scale run](https://github.com/drvillo/1bridge-research-artifacts/blob/a92428c/results/observer-scale-benchmark.json) accepted all three prefixes using a direct 100-item poll budget; it does not measure the deployed route. The 10,001-checkpoint case would require **at least 834 selected invocations** under the current 12-item production cap, or at least seven daily 129-call seed-plus-continuation chains even if that feed were selected on every call and all calls succeeded. Feed rotation, invocation time and source failures may add more days. The operator should monitor pending heads and invoke catch-up again before retention expires; no automatic 24-hour catch-up guarantee is claimed.
+On [Vercel Hobby](https://vercel.com/docs/cron-jobs/usage-and-pricing), cron runs at most once per day and may start anywhere within its scheduled hour. This route declares a 60-second [function duration](https://vercel.com/docs/functions/configuring-functions/duration). Merkle consistency lets one poll jump over many publications without replaying intermediate checkpoints. The observer can still be stale during an outage or after the last poll. A freshness threshold is a verifier policy, not a service availability guarantee.
+
+Historical feed-replay benchmark artifacts characterize version 1 and do not measure the compact route. Measure real source proof-generation and Vercel poll duration before making a latency claim for the new deployment.
 
 For the 1Bridge registry source's full-prefix consistency-proof cost, set `OBSERVER_REGISTRY_PROOF_OUT` to an absolute output path and run `pnpm bench:registry-proof`. The opt-in microbenchmark uses a disposable pinned Postgres container, synthetic 512-byte entries and the installed authority library. It verifies every generated proof against independently computed roots. It measures the equivalent ordered database read and proof function, not a running 1Bridge route, Vercel deployment or real registry-entry distribution; do not treat its timings as a service latency promise.
 
-`SOURCE_BASE_URL` is an HTTPS origin with no credentials, path, query, or fragment. HTTP loopback is available in tests. Endpoint and page limits are in [the shared observer contract](docs/shared-observer-plan.md). `GET /api/health` reports process liveness.
+`SOURCE_BASE_URL` is an HTTPS origin with no credentials, path, query, or fragment. HTTP loopback is available in tests. `GET /api/health` reports process liveness.
 
 ## Supabase `DATABASE_URL`
 
@@ -130,13 +134,13 @@ The password in that URI is the database password from **Project Settings → Da
 
 ## Environment variables
 
-Shared-profile names are what the Vercel cron reads. Legacy names apply to a separate single-feed install. Placeholders are the same strings as `.env.example`.
+The names below are what the compact Vercel cron reads. Placeholders are the same strings as `.env.example`.
 
 ### Shared profile
 
 **`SOURCE_BASE_URL`**
 
-HTTPS origin of the 1Bridge deployment that publishes the public registry and feed routes. No user, password, path, query, or fragment. You copy the origin from that deployment (the scheme and host you open in a browser).
+HTTPS origin of the 1Bridge deployment that publishes the public registry head and consistency routes. No user, password, path, query, or fragment.
 
 **`REGISTRY_PUBLISHER_PUBLIC_KEY`**
 
@@ -156,13 +160,13 @@ Schema name. If you omit it, the service uses `public`. You create the schema an
 
 **`CRON_SECRET`**
 
-A secret you generate, at least 32 UTF-8 bytes. `openssl rand -base64 32` is enough. You paste it into the Vercel project (and into `.env.local` for a local server). Vercel Cron sends it as `Authorization: Bearer` on `GET /api/shared-poll`. A manual catch-up uses the same header. On the legacy profile, `GET /api/poll` expects this secret too.
+A secret you generate, at least 32 UTF-8 bytes. `openssl rand -base64 32` is enough. You paste it into the Vercel project (and into `.env.local` for a local server). Vercel Cron sends it as `Authorization: Bearer` on `GET /api/registry-witness/poll`. A manual poll uses the same header.
 
 **`OBSERVER_SIGNING_PRIVATE_KEY`**
 
 `replace-with-unpadded-base64url-pkcs8`
 
-Unpadded base64url PKCS#8 of an observer-owned ECDSA P-256 private key. The command in step 4 prints it. Store it in Vercel as a sensitive environment variable, or in `.env.local` for a local process. It signs aggregate reports.
+Unpadded base64url PKCS#8 of an observer-owned ECDSA P-256 private key. The command in step 4 prints it. Store it in Vercel as a sensitive environment variable, or in `.env.local` for a local process. It signs global witness reports.
 
 **`OBSERVER_SIGNING_PUBLIC_KEY`**
 
@@ -172,33 +176,11 @@ Unpadded base64url [SPKI](#spki) of that same keypair. The command prints it nex
 
 Generate one observer-owned pair. Pin its public key independently of the source.
 
-### Legacy single-feed profile
+### Upgrade from legacy profiles
 
-`GET /api/poll` and token-protected `GET /api/reports/latest` read these. The shared cron does not. There is no public receipt-ingress route or browser-to-observer submission in the initial release. The legacy store can keep completion receipts handed to it in process, but that archive does not show that every customer submitted a receipt. During normal polling, the observer reads completion leaves and signed checkpoints; a later action leaf can include its predecessor receipt, which is then checked during replay.
+This release retires `/api/poll`, `/api/reports/latest`, `/api/shared-poll`, `/api/shared-reports/*` and queue continuation. Remove manually configured old cron or queue triggers. Only `/api/registry-witness/poll` is scheduled. `FEED_ID`, `ANCHOR_PIN`, `SIGNED_ANCHOR` and `REPORT_READ_TOKEN` are no longer used.
 
-**`FEED_ID`**
-
-`replace-with-64-lowercase-hex-characters`
-
-The [feed](#feed) id inside the [customer](#customer-and-authority-anchor)'s signed [authority anchor](#customer-and-authority-anchor): 64 lowercase hex characters. The customer gives you the anchor. You set `FEED_ID` to the anchor's `feedId`. Startup fails if the verified anchor carries a different id.
-
-**`ANCHOR_PIN`**
-
-`replace-with-independently-authenticated-64-lowercase-hex-anchor-hash`
-
-The 64-lowercase-hex hash of that anchor, authenticated by the customer when the anchor was created and given to you with the anchor. This is the legacy [pin](#pin). The service verifies `SIGNED_ANCHOR` against it. The hash you were given is the value a copy on the source head response has to match.
-
-**`SIGNED_ANCHOR`**
-
-`replace-with-canonical-unpadded-base64url-of-canonical-signed-anchor-json`
-
-Canonical unpadded base64url of the canonical signed-anchor JSON. The customer exports this bytestring with the [pin](#pin). The service rejects `=` padding and any character outside the base64url alphabet.
-
-**`REPORT_READ_TOKEN`**
-
-`replace-with-a-different-at-least-32-utf8-byte-secret`
-
-A second secret you generate, at least 32 UTF-8 bytes, distinct from `CRON_SECRET`. Readers send it as `Authorization: Bearer` on `GET /api/reports/latest`. It authorizes that read. It does not sign reports. `openssl rand -base64 32` is a fine generator, run separately from the cron secret so the two values differ.
+The installer preserves immutable schema-v1–v4 migrations and historical rows, then installs v5. It never converts v1 reports into v2 witness reports. Export historical reports before upgrading if external consumers need them; use the prior Git revision to read their old API. No external consumer was found in reviewed repositories, but unknown third-party consumers cannot be ruled out.
 
 ### Test-only names
 
@@ -212,36 +194,22 @@ A second secret you generate, at least 32 UTF-8 bytes, distinct from `CRON_SECRE
 | `OBSERVER_LIVE_SOURCE_BASE_URL` | Origin of a disposable 1Bridge Next app that is already publishing registry feeds. |
 | `OBSERVER_LIVE_REGISTRY_PUBLIC_KEY` | [Registry publisher](#registry-publisher) [SPKI](#spki) you retained for that test source. |
 | `OBSERVER_LIVE_REGISTRY_GENESIS` | [Signed empty registry genesis](#signed-empty-registry-genesis) you retained for that test source. |
-| `OBSERVER_LIVE_FEEDS` | JSON array of pins, for example `[{"feedId":"<64-hex>","anchorPin":"<64-hex>"}]`. |
+| `OBSERVER_LIVE_REGISTRY_TARGET` | Exact 64-character lowercase hash of the signed head expected from that source. |
+| `OBSERVER_LIVE_EXPECTED_REGISTRY_SIZE` | Expected integer entry count of that head, at least four for the two-feed fixture. |
 
 ## Public verification interface
 
-- `GET /api/shared-reports/latest` returns `{ version: 1, reportHash, signedReport }`, or 404 before the first report.
-- `GET /api/shared-reports/status?reportHash=<64-lowercase-hex>&feedId=<64-lowercase-hex>` returns `{ version: 1, reportHash, proof }` for a feed in that report.
+`GET /api/registry-witness/latest` returns `{ version: 2, reportHash, signedReport }`, or 404 before a report exists. It is public, read-only, noncredentialed and cross-origin (`Access-Control-Allow-Origin: *`, `Cache-Control: no-store`). The protected poll route uses the cron bearer secret.
 
-Both routes are public and read-only. Browsers on any origin may call them (`Access-Control-Allow-Origin: *`). Responses use `Cache-Control: no-store`. They expose pseudonymous feed IDs and cryptographic status, not customer identity or private payloads. Browser callers send a non-credentialed GET. The routes do not require the cron secret or a customer machine token.
+Verifiers independently pin the observer public key, publisher public key and signed empty registry genesis. The signed report contains the accepted global root, observation time and unresolved findings. The observer retains global signed roots and findings in v5 tables and requests only the source registry `head` and `consistency` routes. It never requests customer feed history or accepts customer receipts.
 
-A [report verifier](#report-verifier) pins, on its own, the [observer signing key](#observer-signing-key)'s public half, the [registry publisher](#registry-publisher) public key, the expected [registry checkpoint](#registry-checkpoint), and its own [feed](#feed) ID and [authority anchor](#customer-and-authority-anchor) [pin](#pin). It then calls `verifyAggregateFeedStatus` from the authority library. The proof cannot supply the expected customer identity. `verified` means this observer replayed the registry-advertised feed head. `pending` means it has not. HTTP 200 and this deployment's key configuration are not independent trust anchors. Reports keep the registry and verified replay snapshots needed to regenerate status proofs.
-
-The database keeps accepted and staged global registry entries and checkpoints, source findings, per-feed accepted evidence, and signed reports. A transient registry source error is recorded. If a later accepted chain contains that target hash, its source-nonconformance finding is marked resolved and the record stays. An attempt-bound feed source finding resolves when the exact signed target is accepted; a diagnostic without a recorded target remains unresolved because there is no signed target to match. An invalid replay stays a finding. A source outage is pending, not a tampering verdict. Registry checkpoints and signed action predecessor links make a later rewrite of a witnessed prefix detectable. The observer cannot prove that every action was published, or that a tail nobody witnessed had existed.
+A root witnesses append-only publication. It does not attest actor authority, action validity, the latest head for a customer, or completeness of the product audit log. Customer-side verification combines a saved action receipt with registry inclusion and authenticated feed history. A later hidden-X citation inside an action is not inspected by this observer. An outage is pending/stale, not proof of tampering; shares never wait for the observer.
 
 ## Checks in this repo
 
-The authority dependency is pinned in `package.json` to a reviewed Git commit. `pnpm-workspace.yaml` allows that dependency's Git `prepare` build. v1–v3 migrations stay frozen. `schema-v4.sql` adds the shared registry and aggregate tables.
+Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:integration` and `pnpm build`. Integration uses disposable Postgres and tests fresh installation, preserved legacy upgrades, compact root acceptance, findings, restart, concurrency, outage recovery and public route contracts. `test/store.supabase.test.sh` runs the same suite in a disposable database on local Supabase Postgres. Historical benchmark artifacts remain evidence of the retired profile, not compact-profile performance claims.
 
-- `bash test/schema.sql.test.sh` checks the v1 DDL against disposable Postgres.
-- `pnpm test:integration` covers fresh installs, v1 and v2 upgrades, and shared workflows, including a loopback HTTP source with two feeds, a 25-feed rotating scheduler across store restarts, bounded catch-up, outage recovery, and a missing-checkpoint finding.
-- Optional Supabase scripts run against a disposable Supabase Postgres database you supply (`OBSERVER_SUPABASE_CONTAINER` and `OBSERVER_SUPABASE_DATABASE_URL`).
-
-To check a live 1Bridge source:
-
-1. Start a disposable local app database and Next server whose published registry feeds contain signed leaves.
-2. In a separate disposable Postgres database, create the schema `observer_live_source`.
-3. Set `OBSERVER_TEST_DATABASE_URL`, `OBSERVER_LIVE_SOURCE_BASE_URL`, `OBSERVER_LIVE_REGISTRY_PUBLIC_KEY`, and `OBSERVER_LIVE_REGISTRY_GENESIS` from the pins you retained for that test.
-4. Set `OBSERVER_LIVE_FEEDS` to a JSON array such as `[{"feedId":"<64-hex>","anchorPin":"<64-hex>"}]`.
-5. Run `pnpm exec vitest run --config vitest.integration.config.ts test/live-source.integration.test.ts`.
-
-That test pulls the public registry and feed routes, checks the pinned signatures and signed leaves, stores each accepted head, and checks signed aggregate coverage proofs. The ordinary integration suite skips it when those variables are unset. Point `OBSERVER_TEST_DATABASE_URL` at disposable data.
+For the optional real-source check, use a **disposable observer database** and set `OBSERVER_TEST_DATABASE_URL`, `OBSERVER_LIVE_SOURCE_BASE_URL`, `OBSERVER_LIVE_REGISTRY_PUBLIC_KEY`, `OBSERVER_LIVE_REGISTRY_GENESIS`, `OBSERVER_LIVE_REGISTRY_TARGET` (the exact expected 64-character checkpoint hash), and `OBSERVER_LIVE_EXPECTED_REGISTRY_SIZE` (at least four). Run `pnpm exec vitest run --config vitest.integration.config.ts test/live-source.integration.test.ts`. The test creates and drops a unique observer schema itself; it is skipped unless every value is configured. It authenticates the signed report and checks that the accepted cursor matches the expected size and hash. The source database is not modified by this test. Third-party deployed cron smoke and freshness SLA remain unverified.
 
 ## Appendix: Roles and terms
 
@@ -257,11 +225,11 @@ You get their public key and the signed genesis from them. A 1Bridge release rec
 
 ### Monitored deployment
 
-The 1Bridge HTTPS origin in `SOURCE_BASE_URL`. This service pulls registry and feed routes from it. The [pins](#pin) are the values you use to check that origin.
+The 1Bridge HTTPS origin in `SOURCE_BASE_URL`. The shared observer pulls only the public registry `head` and `consistency` routes from it. The [pins](#pin) are the values you use to check that origin.
 
 ### Registry
 
-The append-only log of pseudonymous workspace registrations and the feed heads those workspaces advertise. The registry publisher signs it. The shared observer learns feed ids from this log. It takes no customer feed list in its environment.
+The append-only log of pseudonymous workspace registrations and the feed heads those workspaces advertise. The registry publisher signs its checkpoints. The shared observer witnesses the registry roots without fetching entries or learning feed IDs. It takes no customer feed list in its environment.
 
 ### Signed empty registry genesis
 
@@ -269,11 +237,11 @@ The first registry checkpoint. Its statement has `size` 0 and `previous` null, a
 
 ### Registry checkpoint
 
-One signed statement in the registry chain. Each statement names the hash of the statement before it. The observer replays that chain from the pinned genesis to the head the monitored deployment advertises.
+One signed statement in the registry chain. Each statement names the hash of the statement before it. The compact observer verifies endpoint signatures and a Merkle consistency proof from its retained root to the advertised head; it does not replay skipped checkpoint metadata.
 
 ### Pin
 
-A value you configure and keep, which the monitored deployment has to match. The shared profile has one registry pin: the publisher public key together with the signed empty genesis. The legacy single-feed profile adds an anchor pin, the 64-hex hash of one customer's signed authority anchor.
+A value you configure and keep, which the monitored deployment has to match. The shared profile has one registry pin: the publisher public key together with the signed empty genesis. Customer-side action verification additionally pins the customer's signed authority anchor.
 
 ### SPKI
 
@@ -281,18 +249,18 @@ Subject Public Key Info, the usual encoding of an ECDSA P-256 public key. This s
 
 ### Feed
 
-A pseudonymous evidence log for one workspace, advertised by the registry and identified by 64 lowercase hex characters. The shared profile reads those ids from the registry. The legacy profile is configured with one id in `FEED_ID`.
+A pseudonymous evidence log for one workspace, advertised by the registry and identified by 64 lowercase hex characters. The compact observer does not read these IDs; customer-side verifiers use them in inclusion and feed-history proofs.
 
 ### Customer and authority anchor
 
-A customer is a workspace owner on 1Bridge. Their authority anchor is a signed document that binds their feed id and the initial provider checkpoint key. They authenticate the anchor's 64-hex hash when the anchor is created. That hash is `ANCHOR_PIN` on a legacy single-feed install, supplied with `SIGNED_ANCHOR`. The shared cron does not read those variables. A customer who checks a public report still pins their own feed id and anchor hash while verifying.
+A customer is a workspace owner on 1Bridge. Their authority anchor is a signed document that binds their feed id and the initial provider checkpoint key. They authenticate the anchor's 64-hex hash when the anchor is created. The customer-side action verifier pins this hash and feed ID. The compact observer needs neither.
 
 ### Observer signing key
 
-An ECDSA P-256 key generated for this deployment, with the command in [step 4](#4-generate-the-observer-signing-key). The private key signs aggregate reports. Report verifiers pin the public key from you. This key is distinct from the registry publisher key and from any customer authority anchor.
+An ECDSA P-256 key generated for this deployment, with the command in [step 4](#4-generate-the-observer-signing-key). The private key signs compact global witness reports. Report verifiers pin the public key from you. This key is distinct from the registry publisher key and from any customer authority anchor.
 
 ### Report verifier
 
-A party that checks a signed aggregate report. Often that party is a customer inspecting their own feed. They pin your observer public key, the registry publisher public key, the registry checkpoint they expect, and their own feed id and authority anchor pin, then call `verifyAggregateFeedStatus`. The report body does not fill in those expected values.
+A party that checks a signed global witness report using `verifyRegistryWitness` from the authority library and independently pinned observer/publisher keys and signed genesis. To check a specific action, the customer additionally verifies its saved receipt, registry inclusion and signed feed history. The report body cannot supply independent trust pins.
 
 License: MIT.

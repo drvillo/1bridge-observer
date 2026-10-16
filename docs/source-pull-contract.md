@@ -1,3 +1,5 @@
+> Historical design/evidence for the retired v1 profile. See README.md and the compact registry witness plan for current runtime.
+
 # Versioned pull source contract
 
 Status: proposed cross-repository wire contract for the fixture publisher, observer and later 1bridge app adapter. No route in either repository currently serves this contract. The customer-run observer is a **puller**; a source route never calls it. Strict audit policy never makes a release wait for observer availability.
