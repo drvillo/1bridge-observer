@@ -48,7 +48,7 @@ describe('durable observer store', () => {
     await installObserverSchema(store)
     const marker = await inspector.query('SELECT version, schema_digest, catalog_fingerprint FROM observer_test.observer_schema_versions')
     expect(marker.rows).toHaveLength(1)
-    expect(marker.rows[0]).toMatchObject({ version: 4 })
+    expect(marker.rows[0]).toMatchObject({ version: 5 })
     expect(marker.rows[0].schema_digest).toMatch(/^[0-9a-f]{64}$/)
     expect(marker.rows[0].catalog_fingerprint).toMatch(/^[0-9a-f]{32}$/)
     expect((await inspector.query("SELECT to_regclass('observer_test.observer_reports') IS NOT NULL AS installed")).rows[0].installed).toBe(true)
@@ -64,7 +64,7 @@ describe('durable observer store', () => {
     try {
       await Promise.all([installObserverSchema(first), installObserverSchema(second)])
       const result = await inspector.query('SELECT version FROM observer_parallel.observer_schema_versions')
-      expect(result.rows).toEqual([{ version: 4 }])
+      expect(result.rows).toEqual([{ version: 5 }])
     } finally { await Promise.all([first.close(), second.close()]) }
     const missing = openObserverStore(databaseUrl, 'observer_missing')
     try {
@@ -95,7 +95,7 @@ describe('durable observer store', () => {
       await inspector.query('CREATE INDEX observer_findings_unresolved_idx ON observer_upgrade.observer_findings(feed_id, first_seen_at) WHERE resolved_at IS NULL')
       await installObserverSchema(upgrade)
       await installObserverSchema(upgrade)
-      expect((await inspector.query('SELECT version FROM observer_upgrade.observer_schema_versions')).rows).toEqual([{ version: 4 }])
+      expect((await inspector.query('SELECT version FROM observer_upgrade.observer_schema_versions')).rows).toEqual([{ version: 5 }])
       expect((await inspector.query('SELECT feed_id FROM observer_upgrade.observer_feeds')).rows).toEqual([{ feed_id: feedId }])
       expect((await inspector.query("SELECT to_regclass('observer_upgrade.observer_reports') IS NOT NULL AS installed")).rows[0].installed).toBe(true)
       await inspector.query('ALTER TABLE observer_upgrade.observer_reports ADD COLUMN unreviewed_text text')
@@ -131,12 +131,44 @@ describe('durable observer store', () => {
       await installObserverSchema(upgrade)
       await installObserverSchema(upgrade)
       expect((await inspector.query('SELECT version FROM observer_upgrade_v2.observer_schema_versions')).rows)
-        .toEqual([{ version: 4 }])
+        .toEqual([{ version: 5 }])
       expect((await inspector.query('SELECT feed_id FROM observer_upgrade_v2.observer_feeds')).rows)
         .toEqual([{ feed_id: feedId }])
       await inspector.query('DROP INDEX observer_upgrade_v2.observer_known_receipts_feed_index_idx')
       await inspector.query('CREATE INDEX observer_known_receipts_feed_index_idx ON observer_upgrade_v2.observer_known_receipts(feed_id)')
       await expect(installObserverSchema(upgrade)).rejects.toThrow(/catalog has changed/)
+    } finally { await upgrade.close() }
+  })
+
+  it('upgrades an existing v4 shared registry without reinterpreting legacy rows', async () => {
+    const scripts = ['schema.sql', 'schema-v2.sql', 'schema-v3.sql', 'schema-v4.sql']
+      .map(name => readFileSync(new URL(`../${name}`, import.meta.url), 'utf8'))
+    const digests = scripts.map(sql => createHash('sha256').update(sql).digest('hex'))
+    const client = await inspector.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query("SELECT set_config('search_path', 'observer_upgrade_v4', true)")
+      for (let index = 0; index < scripts.length; index++) {
+        if (index > 0) await client.query(
+          "SELECT set_config('observer.previous_schema_digest', $1, true)", [digests[index - 1]])
+        await client.query("SELECT set_config('observer.schema_digest', $1, true)", [digests[index]])
+        await client.query(scripts[index]!)
+      }
+      await client.query('COMMIT')
+    } catch (error) { await client.query('ROLLBACK'); throw error }
+    finally { client.release() }
+    await inspector.query(`INSERT INTO observer_upgrade_v4.observer_registry_findings
+      (finding_type, evidence_bytes) VALUES('source_nonconformance', $1)`, [Buffer.from('legacy')])
+    const upgrade = openObserverStore(databaseUrl, 'observer_upgrade_v4')
+    try {
+      await installObserverSchema(upgrade)
+      await installObserverSchema(upgrade)
+      expect((await inspector.query('SELECT version FROM observer_upgrade_v4.observer_schema_versions')).rows)
+        .toEqual([{ version: 5 }])
+      expect((await inspector.query('SELECT count(*)::integer AS count FROM observer_upgrade_v4.observer_registry_findings')).rows[0].count)
+        .toBe(1)
+      expect((await inspector.query("SELECT to_regclass('observer_upgrade_v4.observer_witness_cursor') IS NOT NULL AS installed")).rows[0].installed)
+        .toBe(true)
     } finally { await upgrade.close() }
   })
 

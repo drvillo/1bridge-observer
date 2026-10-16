@@ -201,11 +201,13 @@ export async function installObserverSchema(store: ObserverStore): Promise<void>
   const v2 = readFileSync(new URL('../../schema-v2.sql', import.meta.url), 'utf8')
   const v3 = readFileSync(new URL('../../schema-v3.sql', import.meta.url), 'utf8')
   const v4 = readFileSync(new URL('../../schema-v4.sql', import.meta.url), 'utf8')
+  const v5 = readFileSync(new URL('../../schema-v5.sql', import.meta.url), 'utf8')
   const fingerprintSql = readFileSync(new URL('../../schema-fingerprint.sql', import.meta.url), 'utf8')
   const v1Digest = createHash('sha256').update(v1).digest('hex')
   const v2Digest = createHash('sha256').update(v2).digest('hex')
   const v3Digest = createHash('sha256').update(v3).digest('hex')
   const v4Digest = createHash('sha256').update(v4).digest('hex')
+  const v5Digest = createHash('sha256').update(v5).digest('hex')
   await transaction(store, async client => {
     await client.query('SELECT pg_advisory_xact_lock(6704462056185601401)')
     const marker = await client.query<{ exists: boolean }>(
@@ -216,7 +218,7 @@ export async function installObserverSchema(store: ObserverStore): Promise<void>
         'SELECT version, catalog_fingerprint FROM observer_schema_versions')
       if (current.rows.length !== 1) throw new TypeError('Invalid observer schema marker')
       version = current.rows[0]!.version
-      if (version !== 1 && version !== 2 && version !== 3 && version !== 4) throw new TypeError('Unsupported observer schema marker')
+      if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5) throw new TypeError('Unsupported observer schema marker')
       const actual = await client.query<{ catalog_fingerprint: string }>(fingerprintSql)
       if (actual.rows.length !== 1
         || actual.rows[0]!.catalog_fingerprint !== current.rows[0]!.catalog_fingerprint) {
@@ -237,9 +239,16 @@ export async function installObserverSchema(store: ObserverStore): Promise<void>
       await client.query("SELECT set_config('observer.schema_digest', $1, true)", [v3Digest])
       await client.query(v3)
     }
-    await client.query("SELECT set_config('observer.previous_schema_digest', $1, true)", [v3Digest])
-    await client.query("SELECT set_config('observer.schema_digest', $1, true)", [v4Digest])
-    await client.query(v4)
+    if (version === null || version <= 4) {
+      await client.query("SELECT set_config('observer.previous_schema_digest', $1, true)", [v3Digest])
+      await client.query("SELECT set_config('observer.schema_digest', $1, true)", [v4Digest])
+      await client.query(v4)
+      await client.query("SELECT set_config('observer.schema_digest', $1, true)", [v5Digest])
+      await client.query(v5)
+      const fingerprint = await client.query<{ catalog_fingerprint: string }>(fingerprintSql)
+      await client.query('UPDATE observer_schema_versions SET catalog_fingerprint=$1',
+        [fingerprint.rows[0]!.catalog_fingerprint])
+    }
   })
 }
 

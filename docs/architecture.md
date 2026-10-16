@@ -1,6 +1,14 @@
 # Independent observer architecture and implementation order
 
-Status: design contract and partial implementation, updated 2026-10-16. The observer has a runnable Next.js app, bounded source pull and process-local replay, a Postgres store for staged/accepted evidence and signed prefix reports, and a protected bounded poll route scheduled daily by Vercel. A store API can retain externally supplied canonical receipts, but the initial release has no browser-to-observer receipt transport or receipt-ingress endpoint. Deployed custody and a production observer are still absent. The user selected a public, independently operated TypeScript observer that pulls 1Bridge, supports Vercel and ordinary Postgres/Supabase, and never participates in a release decision. This design uses the 1Bridge D1–D4 shared architecture.
+Status: compact shared-profile code implemented locally, updated 2026-10-16. The active daily Vercel cron pulls a signed global registry head and, when it advances, one Merkle consistency path. It retains the accepted root and bounded findings in observer-owned Postgres and signs a version-2 global witness. The public read route verifies the retained signature before returning it. A real production deployment, independent key delivery and the 1Bridge app-side comparator remain unverified. The observer never participates in a release decision.
+
+**Version boundary:** [the v2 plan](superpowers/plans/2026-10-16-compact-registry-witness.md) supersedes this document's older shared per-feed replay, aggregate `verified/pending` reporting, feed backlog and queue-continuation design. Those version-1 routes and storage tables remain for compatibility, but the deployed cron no longer invokes them. The witness authenticates a global append-only prefix; customer-side registry inclusion and feed continuation are separate work. It cannot inspect later action citations or automatically detect a hidden action that was never independently retained.
+
+The compact path is `GET /api/registry-witness/poll` → `pollRegistryWitnessOnce` → `GET /api/governance/v1/registry/head` and, on advancement, `/consistency` → authority signature/Merkle verification → compare-and-swap witness cursor and signed report. `GET /api/registry-witness/latest` re-verifies retained bytes using the configured publisher pin and observer public key. An unavailable source does not advance the cursor or create a tampering finding. A malformed or inconsistent source response creates a durable finding and a signed report on the last accepted root. Polls do not fetch registry entries or tenant feeds. A source can keep an entire coherent branch hidden; detection requires an independently retained receipt or a subsequent inconsistency in the globally witnessed Merkle prefix.
+
+## Legacy version-1 architecture (compatibility only)
+
+The sections below document the retained feed-replay implementation. They do not describe the scheduled shared witness or its version-2 report guarantee.
 
 ## Ground truth and trust boundary
 

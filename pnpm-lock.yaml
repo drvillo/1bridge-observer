@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@drvillo/1bridge-authority':
-        specifier: github:drvillo/1bridge-authority#b48c9989b59f243b22c655b3d55b4ce0ae814f06
-        version: https://codeload.github.com/drvillo/1bridge-authority/tar.gz/b48c9989b59f243b22c655b3d55b4ce0ae814f06
+        specifier: github:drvillo/1bridge-authority#297f81d11ed3cee75f01d561a71da15de8e75697
+        version: https://codeload.github.com/drvillo/1bridge-authority/tar.gz/297f81d11ed3cee75f01d561a71da15de8e75697
       '@vercel/queue':
         specifier: ^0.8.0
         version: 0.8.0
@@ -121,8 +121,8 @@ packages:
     resolution: {integrity: sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg==}
     engines: {node: '>=6.9.0'}
 
-  '@drvillo/1bridge-authority@https://codeload.github.com/drvillo/1bridge-authority/tar.gz/b48c9989b59f243b22c655b3d55b4ce0ae814f06':
-    resolution: {tarball: https://codeload.github.com/drvillo/1bridge-authority/tar.gz/b48c9989b59f243b22c655b3d55b4ce0ae814f06}
+  '@drvillo/1bridge-authority@https://codeload.github.com/drvillo/1bridge-authority/tar.gz/297f81d11ed3cee75f01d561a71da15de8e75697':
+    resolution: {tarball: https://codeload.github.com/drvillo/1bridge-authority/tar.gz/297f81d11ed3cee75f01d561a71da15de8e75697}
     version: 0.0.0
     engines: {node: '>=22'}
 
@@ -2559,7 +2559,7 @@ snapshots:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
 
-  '@drvillo/1bridge-authority@https://codeload.github.com/drvillo/1bridge-authority/tar.gz/b48c9989b59f243b22c655b3d55b4ce0ae814f06': {}
+  '@drvillo/1bridge-authority@https://codeload.github.com/drvillo/1bridge-authority/tar.gz/297f81d11ed3cee75f01d561a71da15de8e75697': {}
 
   '@emnapi/core@1.10.0':
     dependencies:

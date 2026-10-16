@@ -1,8 +1,10 @@
 # 1Bridge independent observer
 
-This public TypeScript/Next.js service pulls a signed pseudonymous governance [registry](#registry) and its advertised [feed](#feed) evidence from 1Bridge. It stores accepted prefixes in observer-owned Postgres, replays authority and action signatures with [the authority library](https://github.com/drvillo/1bridge-authority), and signs aggregate reports that mark each feed verified or pending.
+> **Current shared profile:** the daily Vercel cron runs the version-2 compact global registry witness. The earlier per-feed routes and reports remain available as legacy version-1 compatibility endpoints during 1Bridge's cutover. A witnessed global root does not prove that a particular customer action was included. See the [compact witness plan](docs/superpowers/plans/2026-10-16-compact-registry-witness.md).
 
-The service does not gate a 1Bridge operation or release. A later published signed action that cites a witnessed predecessor exposes a suppressed gap during catch-up. An event hidden from every independent witness and receipt holder stays invisible here.
+This public TypeScript/Next.js service pulls the latest signed global governance [registry](#registry) head and, when it advances, a Merkle consistency proof from 1Bridge. It stores accepted roots and findings in observer-owned Postgres, then signs a compact global witness with [the authority library](https://github.com/drvillo/1bridge-authority). It does not fetch tenant feeds or registry entries on the current shared cron path. Legacy endpoints can still replay feeds and produce version-1 aggregate reports.
+
+The service does not gate a 1Bridge operation or release. A later root inconsistent with a witnessed Merkle prefix exposes tampering. A compact witness cannot inspect action citations: customer-held receipts and 1Bridge's customer-side feed-continuation verifier are needed to detect a suppressed action within a consistent registry branch. An event hidden from every independent witness and receipt holder stays invisible.
 
 One [observer operator](#observer-operator) deploys the shared profile for every plan. That deployment has no per-customer ID, token, source URL, or feed list. Customer-operated Enterprise observers are a later profile. The [monitored deployment](#monitored-deployment) has to publish pseudonymous verification envelopes with no private payloads. Set `SOURCE_BASE_URL` to a deployment that serves the public registry and feed routes before you claim coverage. Role names used below are collected in [Roles and terms](#appendix-roles-and-terms).
 
@@ -44,7 +46,7 @@ CREATE SCHEMA observer AUTHORIZATION postgres;
 
 The pooler username looks like `postgres.[project-ref]`. The database role is the part before the dot, `postgres`, unless you created another role. That role needs `USAGE` and `CREATE` on the schema. Owning the schema provides both.
 
-v1–v4 migrations then run in one transaction and check the installed catalog fingerprint.
+v1–v5 migrations run in one transaction and check the installed catalog fingerprint. The v5 tables hold the compact witness cursor, signed reports and bounded findings; legacy v1–v4 rows remain historical.
 
 ### 3. Pin the registry
 
@@ -73,21 +75,23 @@ Local Next.js reads `.env.local` from the repo root. Copy `.env.example` to that
 
 On Vercel, open the project and go to **Settings → Environment Variables**. Add each name for Production. Redeploy after saving so the functions pick up the values.
 
-You generate `CRON_SECRET` (`openssl rand -base64 32`). It has to be at least 32 UTF-8 bytes. Vercel Cron reads that project variable and calls `GET /api/shared-poll` with `Authorization: Bearer <CRON_SECRET>`.
+You generate `CRON_SECRET` (`openssl rand -base64 32`). It has to be at least 32 UTF-8 bytes. Vercel Cron reads that project variable and calls `GET /api/registry-witness/poll` with `Authorization: Bearer <CRON_SECRET>`.
 
 What each name means, and where the value comes from, is in [Environment variables](#environment-variables).
 
 ### 6. Deploy
 
-`vercel.json` calls `GET /api/shared-poll` daily at 08:00 UTC and configures a private `observer-catchup` [Vercel Queues push consumer](https://vercel.com/docs/queues). Keep [system environment variables](https://vercel.com/docs/environment-variables/system-environment-variables) exposed so runtime `VERCEL=1` enables sends; a protected poll response reports `continuationStatus` as `queued`, `not_needed`, `local_only` or `send_failed`. On Vercel, a cron/manual poll schedules another bounded poll when a catalog sweep remains or durable staging/acceptance advanced; a full no-progress sweep stops the chain. At most 128 queue follow-ups are sent per seed, after which the next cron/manual call may resume. The daily poll signs a fresh report timestamp; queued polls sign a new report only after accepted coverage or findings change, so staging pages do not each store another full snapshot. The queue carries only scheduling counters. It is a wake-up, while Postgres retains the cursor, signed evidence, leases and findings; lost, duplicate and expired messages do not replace that state. The queue feature is in public beta and [available on Hobby](https://vercel.com/docs/queues); verify its push trigger on your deployed project. Locally the same protected poll route runs without queue delivery. Call that route yourself with the same bearer token to catch up. Each call has a 45-second work budget, at most 12 registry entry/checkpoint pages, at most 12 checkpoint **items** per selected feed, and at most 12 round-robin feeds. The feed poller fetches up to 16 consecutive checkpoints in one HTTP page when its item budget permits, but the production route's 12-item budget remains. An unavailable feed stays pending and leaves its peers running. Vercel does not retry a failed cron run. Read the report checkpoint and time when you want freshness. The daily Hobby trigger is not a bound on observation lag.
+`vercel.json` calls `GET /api/registry-witness/poll` daily at 08:00 UTC. One invocation requests the latest signed head and, if it changed, one consistency proof. It signs a fresh report timestamp after an unchanged valid head or a retained protocol finding. A source outage returns `unavailable`, preserves the last accepted root, and never blocks 1Bridge. Invoke the protected route manually with the same bearer token when you need another observation. Public `GET /api/registry-witness/latest` returns the latest signed global report. Pin the observer public key independently before trusting it. The older `/api/shared-poll` and `/api/shared-reports/*` routes are version-1 compatibility endpoints and are not scheduled by `vercel.json`.
 
-On [Vercel Hobby](https://vercel.com/docs/cron-jobs/usage-and-pricing), cron runs at most once per day and may start anywhere within its scheduled hour. This route declares a 60-second [function duration](https://vercel.com/docs/functions/configuring-functions/duration), with 45 seconds reserved for polling. With a stable catalog of more than 12 feeds, even an error-free observer needs at least `ceil(feed count / 12)` daily runs to select every feed once; registry backlog, source outages and retries can extend that further. A 24-hour customer review threshold therefore means **an old report is labeled stale and cannot complete strict review**, not that Hobby guarantees a new witness every 24 hours. The independent operator can invoke the protected route additional times for catch-up or deploy on a plan with a more frequent cron. Neither choice changes 1Bridge release availability.
+The observer retains bounded evidence for parsed conflicting heads and proofs, and a typed finding when parsing fails. A rejected consistency path for a candidate head resolves when that same head is later accepted with a valid path; signature failures and rollbacks remain findings for operator review. The authority report signer accepts at most 10,000 unresolved finding IDs. A malicious source that drives beyond that bound requires operator investigation and a subsequent protocol revision; it cannot block 1Bridge operations. Do not describe the last signed report as current while its finding set or timestamp is stale.
 
-1Bridge currently signs one checkpoint for each governed leaf. A selected feed with 100 new checkpoints therefore needs at least nine invocations at the production route's 12-item budget, even though checkpoint page batching reduces HTTP requests. The [clean 100/1,000/10,000-leaf local scale run](https://github.com/drvillo/1bridge-research-artifacts/blob/a92428c/results/observer-scale-benchmark.json) accepted all three prefixes using a direct 100-item poll budget; it does not measure the deployed route. The 10,001-checkpoint case would require **at least 834 selected invocations** under the current 12-item production cap, or at least seven daily 129-call seed-plus-continuation chains even if that feed were selected on every call and all calls succeeded. Feed rotation, invocation time and source failures may add more days. The operator should monitor pending heads and invoke catch-up again before retention expires; no automatic 24-hour catch-up guarantee is claimed.
+On [Vercel Hobby](https://vercel.com/docs/cron-jobs/usage-and-pricing), cron runs at most once per day and may start anywhere within its scheduled hour. This route declares a 60-second [function duration](https://vercel.com/docs/functions/configuring-functions/duration). Merkle consistency lets one poll jump over many publications without replaying intermediate checkpoints. The observer can still be stale during an outage or after the last poll. A freshness threshold is a verifier policy, not a service availability guarantee.
+
+The historical feed-replay scale benchmark below characterizes version 1 and does not measure the compact route. Measure real source proof-generation and Vercel poll duration before making a latency claim for the new deployment.
 
 For the 1Bridge registry source's full-prefix consistency-proof cost, set `OBSERVER_REGISTRY_PROOF_OUT` to an absolute output path and run `pnpm bench:registry-proof`. The opt-in microbenchmark uses a disposable pinned Postgres container, synthetic 512-byte entries and the installed authority library. It verifies every generated proof against independently computed roots. It measures the equivalent ordered database read and proof function, not a running 1Bridge route, Vercel deployment or real registry-entry distribution; do not treat its timings as a service latency promise.
 
-`SOURCE_BASE_URL` is an HTTPS origin with no credentials, path, query, or fragment. HTTP loopback is available in tests. Endpoint and page limits are in [the shared observer contract](docs/shared-observer-plan.md). `GET /api/health` reports process liveness.
+`SOURCE_BASE_URL` is an HTTPS origin with no credentials, path, query, or fragment. HTTP loopback is available in tests. `GET /api/health` reports process liveness.
 
 ## Supabase `DATABASE_URL`
 
@@ -136,7 +140,7 @@ Shared-profile names are what the Vercel cron reads. Legacy names apply to a sep
 
 **`SOURCE_BASE_URL`**
 
-HTTPS origin of the 1Bridge deployment that publishes the public registry and feed routes. No user, password, path, query, or fragment. You copy the origin from that deployment (the scheme and host you open in a browser).
+HTTPS origin of the 1Bridge deployment that publishes the public registry head and consistency routes. No user, password, path, query, or fragment.
 
 **`REGISTRY_PUBLISHER_PUBLIC_KEY`**
 
@@ -156,13 +160,13 @@ Schema name. If you omit it, the service uses `public`. You create the schema an
 
 **`CRON_SECRET`**
 
-A secret you generate, at least 32 UTF-8 bytes. `openssl rand -base64 32` is enough. You paste it into the Vercel project (and into `.env.local` for a local server). Vercel Cron sends it as `Authorization: Bearer` on `GET /api/shared-poll`. A manual catch-up uses the same header. On the legacy profile, `GET /api/poll` expects this secret too.
+A secret you generate, at least 32 UTF-8 bytes. `openssl rand -base64 32` is enough. You paste it into the Vercel project (and into `.env.local` for a local server). Vercel Cron sends it as `Authorization: Bearer` on `GET /api/registry-witness/poll`. A manual poll uses the same header. Legacy routes also accept it.
 
 **`OBSERVER_SIGNING_PRIVATE_KEY`**
 
 `replace-with-unpadded-base64url-pkcs8`
 
-Unpadded base64url PKCS#8 of an observer-owned ECDSA P-256 private key. The command in step 4 prints it. Store it in Vercel as a sensitive environment variable, or in `.env.local` for a local process. It signs aggregate reports.
+Unpadded base64url PKCS#8 of an observer-owned ECDSA P-256 private key. The command in step 4 prints it. Store it in Vercel as a sensitive environment variable, or in `.env.local` for a local process. It signs global witness reports.
 
 **`OBSERVER_SIGNING_PUBLIC_KEY`**
 
