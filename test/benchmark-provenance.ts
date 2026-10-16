@@ -4,8 +4,8 @@ import { readFile, readdir } from 'node:fs/promises'
 import { cpus, platform, release } from 'node:os'
 import { join } from 'node:path'
 
-const authorityDependency = 'github:drvillo/1bridge-authority#b48c9989b59f243b22c655b3d55b4ce0ae814f06'
-const authorityBuildSha256 = '2a0774548fb95f8d88698a8a19de02ce128d0a7c53383ddcaa561bdaf89ea50b'
+const authorityDependency = 'github:drvillo/1bridge-authority#297f81d11ed3cee75f01d561a71da15de8e75697'
+const authorityBuildSha256 = '204e58bcc1363f188715dc40bad202b5d5515feb955e4ec7cb2b2ad5c69a0a99'
 
 async function installedAuthorityDigest(): Promise<string> {
   const packageRoot = join(process.cwd(), 'node_modules', '@drvillo', '1bridge-authority')
