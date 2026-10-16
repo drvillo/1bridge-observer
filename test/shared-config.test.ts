@@ -40,4 +40,15 @@ describe('shared observer trust configuration', () => {
       { OBSERVER_SCHEMA: 'public;DROP' },
     ]) expect(() => loadSharedObserverConfig({ ...valid, ...changed })).toThrow()
   })
+
+  it('permits HTTP loopback only in local development or tests', () => {
+    for (const environment of ['development', 'test']) {
+      expect(loadSharedObserverConfig({ ...valid, NODE_ENV: environment,
+        SOURCE_BASE_URL: 'http://localhost:3000' }).sourceBaseUrl).toBe('http://localhost:3000')
+      expect(() => loadSharedObserverConfig({ ...valid, NODE_ENV: environment,
+        SOURCE_BASE_URL: 'http://remote.example' })).toThrow()
+    }
+    expect(() => loadSharedObserverConfig({ ...valid,
+      SOURCE_BASE_URL: 'http://localhost:3000' })).toThrow()
+  })
 })

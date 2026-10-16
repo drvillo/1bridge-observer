@@ -93,7 +93,7 @@ function parseSourceUrl(value: string | undefined, nodeEnv: string | undefined):
 
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
   const allowedProtocol = url.protocol === 'https:' ||
-    (nodeEnv === 'test' && loopback && url.protocol === 'http:')
+    ((nodeEnv === 'test' || nodeEnv === 'development') && loopback && url.protocol === 'http:')
   if (
     !allowedProtocol ||
     url.username ||

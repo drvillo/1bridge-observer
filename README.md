@@ -91,7 +91,9 @@ Historical feed-replay benchmark artifacts characterize version 1 and do not mea
 
 For the 1Bridge registry source's full-prefix consistency-proof cost, set `OBSERVER_REGISTRY_PROOF_OUT` to an absolute output path and run `pnpm bench:registry-proof`. The opt-in microbenchmark uses a disposable pinned Postgres container, synthetic 512-byte entries and the installed authority library. It verifies every generated proof against independently computed roots. It measures the equivalent ordered database read and proof function, not a running 1Bridge route, Vercel deployment or real registry-entry distribution; do not treat its timings as a service latency promise.
 
-`SOURCE_BASE_URL` is an HTTPS origin with no credentials, path, query, or fragment. HTTP loopback is available in tests. `GET /api/health` reports process liveness.
+`SOURCE_BASE_URL` is an HTTPS origin with no credentials, path, query, or fragment outside local development and tests. `GET /api/health` reports process liveness.
+
+For a local manual run, `SOURCE_BASE_URL=http://localhost:3000` is also accepted by `pnpm dev`; use a separate local observer schema and run the observer on another port, for example `pnpm exec next dev -p 3001`. The loopback exception applies only in development and tests. Production polling requires HTTPS, and a local observer sharing a Postgres instance with 1Bridge is a functional test, not evidence of independent operation. Invoke the protected poll after 1Bridge publishes a registry batch, then read `/api/registry-witness/latest` and compare the signed report in the 1Bridge Access screen with independently retained public pins.
 
 ## Supabase `DATABASE_URL`
 

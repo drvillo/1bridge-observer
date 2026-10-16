@@ -45,7 +45,8 @@ function sourceUrl(config: RegistrySourceConfig, route: string, params?: Record<
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)
   if (origin.origin !== config.sourceBaseUrl || origin.username || origin.password
     || origin.hash || origin.search || origin.pathname !== '/'
-    || origin.protocol !== 'https:' && !(process.env.NODE_ENV === 'test' && loopback
+    || origin.protocol !== 'https:' && !((process.env.NODE_ENV === 'test'
+      || process.env.NODE_ENV === 'development') && loopback
       && origin.protocol === 'http:')) throw new TypeError('Invalid registry source origin')
   const url = new URL(`/api/governance/v1/registry/${route}`, origin)
   for (const [name, value] of Object.entries(params ?? {})) url.searchParams.set(name, value)
