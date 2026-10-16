@@ -8,7 +8,7 @@ The service does not gate a 1Bridge operation or release. A later root inconsist
 
 One [observer operator](#observer-operator) deploys the shared profile for every plan. That deployment has no per-customer ID, token, source URL, or feed list. Customer-operated Enterprise observers are a later profile. The [monitored deployment](#monitored-deployment) has to publish pseudonymous verification envelopes with no private payloads. Set `SOURCE_BASE_URL` to a deployment that serves the public registry head and consistency routes before you claim coverage. Role names used below are collected in [Roles and terms](#appendix-roles-and-terms).
 
-Routine tests use a local synthetic source and a separate Postgres. An opt-in test can check a running 1Bridge Next source. A green local run does not show that a deployment is watching production.
+Routine tests use a local synthetic source and a separate Postgres. The opt-in live-source test can check a running 1Bridge Next source; the 1Bridge app also has a local cross-repository fixture using its registry readers over HTTP. A green local run does not show that a deployment is watching production.
 
 ## Set up the shared profile
 
@@ -57,7 +57,7 @@ Get two values from that publisher on a channel outside the host you will poll. 
 - `REGISTRY_PUBLISHER_PUBLIC_KEY`: their ECDSA P-256 public key as [SPKI](#spki), unpadded base64url.
 - `REGISTRY_SIGNED_GENESIS`: the [signed empty registry genesis](#signed-empty-registry-genesis), in the same encoding.
 
-Record those bytes before you accept a copy from the [monitored deployment](#monitored-deployment). The authority library checks the genesis signature under that [pin](#pin), then checks later [registry checkpoints](#registry-checkpoint) along the same chain.
+Record those bytes before you accept a copy from the [monitored deployment](#monitored-deployment). The authority library checks the genesis signature under that [pin](#pin). Each later accepted head must have a valid publisher signature and a Merkle consistency proof from the last accepted root; the compact poll does not replay skipped checkpoint metadata.
 
 ### 4. Generate the observer signing key
 
@@ -160,7 +160,7 @@ Schema name. If you omit it, the service uses `public`. You create the schema an
 
 **`CRON_SECRET`**
 
-A secret you generate, at least 32 UTF-8 bytes. `openssl rand -base64 32` is enough. You paste it into the Vercel project (and into `.env.local` for a local server). Vercel Cron sends it as `Authorization: Bearer` on `GET /api/registry-witness/poll`. A manual poll uses the same header. Legacy routes also accept it.
+A secret you generate, at least 32 UTF-8 bytes. `openssl rand -base64 32` is enough. You paste it into the Vercel project (and into `.env.local` for a local server). Vercel Cron sends it as `Authorization: Bearer` on `GET /api/registry-witness/poll`. A manual poll uses the same header.
 
 **`OBSERVER_SIGNING_PRIVATE_KEY`**
 
@@ -194,6 +194,8 @@ The installer preserves immutable schema-v1–v4 migrations and historical rows,
 | `OBSERVER_LIVE_SOURCE_BASE_URL` | Origin of a disposable 1Bridge Next app that is already publishing registry feeds. |
 | `OBSERVER_LIVE_REGISTRY_PUBLIC_KEY` | [Registry publisher](#registry-publisher) [SPKI](#spki) you retained for that test source. |
 | `OBSERVER_LIVE_REGISTRY_GENESIS` | [Signed empty registry genesis](#signed-empty-registry-genesis) you retained for that test source. |
+| `OBSERVER_LIVE_REGISTRY_TARGET` | Exact 64-character lowercase hash of the signed head expected from that source. |
+| `OBSERVER_LIVE_EXPECTED_REGISTRY_SIZE` | Expected integer entry count of that head, at least four for the two-feed fixture. |
 
 ## Public verification interface
 
@@ -207,7 +209,7 @@ A root witnesses append-only publication. It does not attest actor authority, ac
 
 Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:integration` and `pnpm build`. Integration uses disposable Postgres and tests fresh installation, preserved legacy upgrades, compact root acceptance, findings, restart, concurrency, outage recovery and public route contracts. `test/store.supabase.test.sh` runs the same suite in a disposable database on local Supabase Postgres. Historical benchmark artifacts remain evidence of the retired profile, not compact-profile performance claims.
 
-For the optional real-source check, create `observer_live_source` in a disposable database, set `OBSERVER_TEST_DATABASE_URL`, `OBSERVER_LIVE_SOURCE_BASE_URL`, `OBSERVER_LIVE_REGISTRY_PUBLIC_KEY`, and `OBSERVER_LIVE_REGISTRY_GENESIS`, then run `pnpm exec vitest run --config vitest.integration.config.ts test/live-source.integration.test.ts`. It is skipped unless configured. Third-party deployed cron smoke and freshness SLA remain unverified.
+For the optional real-source check, use a **disposable observer database** and set `OBSERVER_TEST_DATABASE_URL`, `OBSERVER_LIVE_SOURCE_BASE_URL`, `OBSERVER_LIVE_REGISTRY_PUBLIC_KEY`, `OBSERVER_LIVE_REGISTRY_GENESIS`, `OBSERVER_LIVE_REGISTRY_TARGET` (the exact expected 64-character checkpoint hash), and `OBSERVER_LIVE_EXPECTED_REGISTRY_SIZE` (at least four). Run `pnpm exec vitest run --config vitest.integration.config.ts test/live-source.integration.test.ts`. The test creates and drops a unique observer schema itself; it is skipped unless every value is configured. It authenticates the signed report and checks that the accepted cursor matches the expected size and hash. The source database is not modified by this test. Third-party deployed cron smoke and freshness SLA remain unverified.
 
 ## Appendix: Roles and terms
 
@@ -223,11 +225,11 @@ You get their public key and the signed genesis from them. A 1Bridge release rec
 
 ### Monitored deployment
 
-The 1Bridge HTTPS origin in `SOURCE_BASE_URL`. This service pulls registry and feed routes from it. The [pins](#pin) are the values you use to check that origin.
+The 1Bridge HTTPS origin in `SOURCE_BASE_URL`. The shared observer pulls only the public registry `head` and `consistency` routes from it. The [pins](#pin) are the values you use to check that origin.
 
 ### Registry
 
-The append-only log of pseudonymous workspace registrations and the feed heads those workspaces advertise. The registry publisher signs it. The shared observer learns feed ids from this log. It takes no customer feed list in its environment.
+The append-only log of pseudonymous workspace registrations and the feed heads those workspaces advertise. The registry publisher signs its checkpoints. The shared observer witnesses the registry roots without fetching entries or learning feed IDs. It takes no customer feed list in its environment.
 
 ### Signed empty registry genesis
 

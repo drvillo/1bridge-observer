@@ -1,16 +1,16 @@
-> Historical design/evidence for the retired v1 profile. See README.md and the compact registry witness plan for current runtime.
+> Historical design/evidence for the retired v1 profile. Its routes, queue and replay runtime have been removed; its migrations remain immutable. See README.md and the compact registry witness plan for current behavior. Do not use the v1 deployment instructions below.
 
 # Independent observer architecture and implementation order
 
-Status: compact shared-profile code implemented locally, updated 2026-10-16. The active daily Vercel cron pulls a signed global registry head and, when it advances, one Merkle consistency path. It retains the accepted root and bounded findings in observer-owned Postgres and signs a version-2 global witness. The public read route verifies the retained signature before returning it. A real production deployment, independent key delivery and the 1Bridge app-side comparator remain unverified. The observer never participates in a release decision.
+Status: compact shared-profile code implemented locally, updated 2026-10-16. The configured daily Vercel cron pulls a signed global registry head and, when it advances, one Merkle consistency path. It retains the accepted root and bounded findings in observer-owned Postgres and signs a version-2 global witness. The public read route verifies the retained signature before returning it. A real production deployment and independent key delivery remain unverified; the app-side comparator is implemented and tested locally. The observer never participates in a release decision.
 
-**Version boundary:** [the v2 plan](superpowers/plans/2026-10-16-compact-registry-witness.md) supersedes this document's older shared per-feed replay, aggregate `verified/pending` reporting, feed backlog and queue-continuation design. Those version-1 routes and storage tables remain for compatibility, but the deployed cron no longer invokes them. The witness authenticates a global append-only prefix; customer-side registry inclusion and feed continuation are separate work. It cannot inspect later action citations or automatically detect a hidden action that was never independently retained.
+**Version boundary:** [the v2 plan](superpowers/plans/2026-10-16-compact-registry-witness.md) supersedes this document's older shared per-feed replay, aggregate `verified/pending` reporting, feed backlog and queue-continuation design. Version-1 routes and replay code were removed; historical migration files and tables remain for upgrade compatibility. The witness authenticates a global append-only prefix; customer-side registry inclusion and feed continuation are separate checks. It cannot inspect later action citations or automatically detect a hidden action that was never independently retained.
 
 The compact path is `GET /api/registry-witness/poll` → `pollRegistryWitnessOnce` → `GET /api/governance/v1/registry/head` and, on advancement, `/consistency` → authority signature/Merkle verification → compare-and-swap witness cursor and signed report. `GET /api/registry-witness/latest` re-verifies retained bytes using the configured publisher pin and observer public key. An unavailable source does not advance the cursor or create a tampering finding. A malformed or inconsistent source response creates a durable finding and a signed report on the last accepted root. Polls do not fetch registry entries or tenant feeds. A source can keep an entire coherent branch hidden; detection requires an independently retained receipt or a subsequent inconsistency in the globally witnessed Merkle prefix.
 
-## Legacy version-1 architecture (compatibility only)
+## Legacy version-1 architecture (historical only)
 
-The sections below document the retained feed-replay implementation. They do not describe the scheduled shared witness or its version-2 report guarantee.
+The sections below document the retired feed-replay implementation. They do not describe the scheduled shared witness or its version-2 report guarantee.
 
 ## Ground truth and trust boundary
 
