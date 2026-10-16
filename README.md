@@ -174,7 +174,7 @@ Generate one observer-owned pair. Pin its public key independently of the source
 
 ### Legacy single-feed profile
 
-`GET /api/poll` and token-protected `GET /api/reports/latest` read these. The shared cron does not. There is no public receipt-ingress route. The legacy store can keep completion receipts handed to it in process, so you can compare them. That archive does not show that every customer submitted a receipt.
+`GET /api/poll` and token-protected `GET /api/reports/latest` read these. The shared cron does not. There is no public receipt-ingress route or browser-to-observer submission in the initial release. The legacy store can keep completion receipts handed to it in process, but that archive does not show that every customer submitted a receipt. During normal polling, the observer reads completion leaves and signed checkpoints; a later action leaf can include its predecessor receipt, which is then checked during replay.
 
 **`FEED_ID`**
 

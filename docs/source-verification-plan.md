@@ -1,6 +1,6 @@
 # Fixed-target source verification increment
 
-Status: implemented and independently reviewed on 2026-10-14. This increment verifies one complete fixed source target in a single process. It does not persist evidence, issue coverage statements, operate a cron, or claim production catch-up capacity.
+Status: historical increment implemented and independently reviewed on 2026-10-14. Later increments added persistence, signed reports and cron. On 2026-10-16 the product owner excluded browser-to-observer receipt ingress from the initial release. This increment verifies one complete fixed source target in a single process; its own checks did not claim production catch-up capacity.
 
 ## Ground truth
 
@@ -43,4 +43,4 @@ The first public-API test failed because the verifier module was absent. The mix
 
 ## Principles and scope
 
-SRP: source client owns bounded transport/decoding, this verifier owns sequence and cryptographic replay, future store owns retention/CAS. DRY: call the authority session; do not reimplement historical signature or Merkle predicates. YAGNI/KISS: no trusted serialized replay cache, database mock, scheduler or new cryptographic scheme. Scoped Boy Scout work may clarify touched source-client errors separately from behavior changes; do not alter existing liveness semantics. Source-read authentication, independent receipt ingress, Postgres driver, and app release semantics remain separate pending decisions.
+SRP: source client owns bounded transport/decoding, this verifier owns sequence and cryptographic replay, the later store owns retention/CAS. DRY: call the authority session; do not reimplement historical signature or Merkle predicates. YAGNI/KISS: no trusted serialized replay cache, database mock, scheduler or new cryptographic scheme. Scoped Boy Scout work may clarify touched source-client errors separately from behavior changes; do not alter existing liveness semantics. Receipt ingress is outside the initial release.

@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
-**Implementation status:** Completed and verified locally, 2026-10-14. The caller-supplied retention API exists; external ingress remains a separate decision.
+**Implementation status:** Completed and verified locally, 2026-10-14. The caller-supplied retention API exists. On 2026-10-16 the product owner excluded browser-to-observer integration from the initial release; this historical plan does not authorize external ingress.
 
-**Goal:** Retain exact externally supplied integrated receipts in customer-owned Postgres and bind the known set and its reconciliation status into scoped signed reports, without choosing an ingress transport or claiming every client receipt has arrived.
+**Goal:** Retain exact externally supplied integrated receipts in observer-owned Postgres and bind the known set and its reconciliation status into scoped signed reports, without choosing an ingress transport or claiming every client receipt has arrived.
 
 **Architecture:** A v3 observer migration adds immutable, feed-scoped canonical receipt bytes keyed by the portable library's receipt hash. A store call snapshots and validates the receipt, inserts it idempotently, and advances the existing signed-report revision only for a new retained receipt. Report publication replays retained source evidence under the independent pin, compares every retained receipt to that accepted prefix, signs a sorted receipt-set digest, and includes deterministic unresolved-status hashes. The caller is trusted to supply externally held evidence; no HTTP ingress is introduced here.
 
@@ -99,4 +99,4 @@ CREATE INDEX observer_known_receipts_feed_index_idx
 - **Boy Scout:** preserve frozen v1/v2 migrations and use the current catalog guard rather than silent `IF NOT EXISTS` upgrades.
 - **Final gate:** the real Postgres and local Supabase suites must prove fresh install, repeat install, both upgrade paths, changed-catalog rejection, exact receipt idempotence, revision tracking, signed known-set scope and pending-to-matched report evolution. Unit tests, lint, typecheck and production build must also pass. These checks prove retention and reconciliation for supplied receipts, not global receipt availability or complete independently observed coverage.
 
-Ingress selection, authenticated client copying and app integration remain dependent on the user decisions already requested. No provider response can prove that the customer archive holds every receipt.
+Authenticated client copying and receipt ingress are outside the selected initial-release scope. No provider response can prove that an independent archive holds every receipt.
