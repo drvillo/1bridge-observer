@@ -1,3 +1,5 @@
+> Historical design/evidence for the retired v1 profile. See README.md and the compact registry witness plan for current runtime.
+
 # Bounded pull client and fixture publisher plan
 
 > Implementation record for the bounded pull increment. The source wire contract is `docs/source-pull-contract.md`. The client fetches and parses a fixed provisional target, and a local HTTP fixture replays a real seven-leaf governance history. This increment does not persist evidence, report coverage or assume a customer-approved feed-read credential scheme.

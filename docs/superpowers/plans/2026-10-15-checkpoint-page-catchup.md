@@ -1,3 +1,5 @@
+> Historical design/evidence for the retired v1 profile. See README.md and the compact registry witness plan for current runtime.
+
 # Bounded checkpoint-page catch-up
 
 ## Ground truth

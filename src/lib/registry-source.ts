@@ -1,12 +1,11 @@
-import { decodeBase64Url, parseCanonical, registryCheckpointHash, registryEntryBytes,
-  type Hash, type RegistryEntry, type SignedRegistryCheckpoint } from '@drvillo/1bridge-authority'
+import { decodeBase64Url, parseCanonical, registryCheckpointHash,
+  type Hash, type SignedRegistryCheckpoint } from '@drvillo/1bridge-authority'
 import { SourceHttpError, SourceProtocolError, SourceTransportError,
   type SourceRequestOptions } from './source'
 
 const HASH = /^[0-9a-f]{64}$/
 const HEAD_LIMIT = 64 * 1024
 const CHECKPOINT_LIMIT = 64 * 1024
-const ENTRY_LIMIT = 256 * 1024
 const CONSISTENCY_LIMIT = 16 * 1024
 
 export interface RegistrySourceConfig { sourceBaseUrl: string }
@@ -24,10 +23,6 @@ export interface RegistryCheckpointItem {
 
 function validHash(value: unknown): value is Hash {
   return typeof value === 'string' && HASH.test(value)
-}
-
-function count(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
 }
 
 function fields(value: unknown, expected: readonly string[]): Record<string, unknown> {
@@ -151,75 +146,6 @@ export async function discoverRegistryHead(config: RegistrySourceConfig,
     if (item.hash !== envelope.checkpointHash) throw new TypeError('Registry head hash mismatch')
     return { provisional: true, checkpointHash: item.hash,
       signedCheckpoint: item.signed, signedCheckpointBytes: item.bytes }
-  })
-}
-
-export async function fetchRegistryCheckpointPage(config: RegistrySourceConfig,
-  target: Hash, after: Hash | 'start', limit: number,
-  options?: SourceRequestOptions): Promise<{ items: RegistryCheckpointItem[] }> {
-  if (!validHash(target) || after !== 'start' && !validHash(after)
-    || !count(limit) || limit < 1 || limit > 16) throw new TypeError('Invalid registry checkpoint request')
-  const data = await get(config, 'checkpoints', CHECKPOINT_LIMIT,
-    { target, after, limit: String(limit) }, options)
-  return protocol(async () => {
-    const envelope = fields(data, ['version', 'target', 'after', 'items'])
-    if (envelope.version !== 1 || envelope.target !== target || envelope.after !== after) {
-      throw new TypeError('Registry checkpoint echo mismatch')
-    }
-    const encoded = pageItems(envelope.items, limit)
-    if (encoded.length === 0 && after !== target || encoded.length > 0 && after === target) {
-      throw new TypeError('Invalid terminal registry checkpoint page')
-    }
-    const result: RegistryCheckpointItem[] = []
-    let predecessor: Hash | null = after === 'start' ? null : after
-    let decodedSize = 0
-    for (const value of encoded) {
-      const item = await checkpointItem(value)
-      decodedSize += item.bytes.byteLength
-      if (decodedSize > CHECKPOINT_LIMIT || item.signed.statement.previous !== predecessor
-        || predecessor === null && item.signed.statement.size !== 0
-        || item.hash === target && result.length !== encoded.length - 1) {
-        throw new TypeError('Registry checkpoint gap or page overflow')
-      }
-      predecessor = item.hash
-      result.push(item)
-    }
-    return { items: result }
-  })
-}
-
-export async function fetchRegistryEntryPage(config: RegistrySourceConfig,
-  target: Hash, start: number, targetSize: number, limit: number,
-  options?: SourceRequestOptions): Promise<{ items: Uint8Array[] }> {
-  if (!validHash(target) || !count(start) || !count(targetSize) || start > targetSize
-    || !count(limit) || limit < 1 || limit > 64) throw new TypeError('Invalid registry entry request')
-  const data = await get(config, 'entries', ENTRY_LIMIT,
-    { target, start: String(start), limit: String(limit) }, options)
-  return protocol(async () => {
-    const envelope = fields(data, ['version', 'target', 'start', 'items'])
-    if (envelope.version !== 1 || envelope.target !== target || envelope.start !== start) {
-      throw new TypeError('Registry entry echo mismatch')
-    }
-    const encoded = pageItems(envelope.items, limit)
-    if (encoded.length === 0 && start !== targetSize || encoded.length > targetSize - start) {
-      throw new TypeError('Registry entry page skips or extends target')
-    }
-    let decodedSize = 0
-    const result: Uint8Array[] = []
-    for (const value of encoded) {
-      const bytes = decoded(value, 32 * 1024)
-      decodedSize += bytes.byteLength
-      if (decodedSize > ENTRY_LIMIT) throw new TypeError('Decoded registry page exceeds byte limit')
-      const entry = parseCanonical(bytes) as unknown as RegistryEntry
-      const expectedBytes = registryEntryBytes(entry)
-      if (entry.index !== start + result.length
-        || expectedBytes.length !== bytes.length
-        || !bytes.every((byte, index) => byte === expectedBytes[index])) {
-        throw new TypeError('Registry entry index or canonical bytes mismatch')
-      }
-      result.push(bytes)
-    }
-    return { items: result }
   })
 }
 

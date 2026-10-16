@@ -7,7 +7,7 @@ const vector = JSON.parse(readFileSync(new URL('./shared-registry-v1.json', impo
 it('loads the global poll signer and rejects mismatched signing keys', async () => {
   const key = await generateSigningKey()
   const other = await generateSigningKey()
-  const env = { SOURCE_BASE_URL: 'https://source.example', DATABASE_URL: 'postgres://user:pass@db.example/observer',
+  const env = { NODE_ENV: 'test' as const, SOURCE_BASE_URL: 'https://source.example', DATABASE_URL: 'postgres://user:pass@db.example/observer',
     CRON_SECRET: 'x'.repeat(32), REGISTRY_PUBLISHER_PUBLIC_KEY: vector.publisherPublicKey,
     REGISTRY_SIGNED_GENESIS: encodeBase64Url(canonicalBytes(vector.genesis)),
     OBSERVER_SIGNING_PRIVATE_KEY: await exportSigningPrivateKey(key.privateKey),

@@ -1,3 +1,5 @@
+> Historical design/evidence for the retired v1 profile. See README.md and the compact registry witness plan for current runtime.
+
 # Known Receipt Retention Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.

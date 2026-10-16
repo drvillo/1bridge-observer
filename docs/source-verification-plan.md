@@ -1,3 +1,5 @@
+> Historical design/evidence for the retired v1 profile. See README.md and the compact registry witness plan for current runtime.
+
 # Fixed-target source verification increment
 
 Status: historical increment implemented and independently reviewed on 2026-10-14. Later increments added persistence, signed reports and cron. On 2026-10-16 the product owner excluded browser-to-observer receipt ingress from the initial release. This increment verifies one complete fixed source target in a single process; its own checks did not claim production catch-up capacity.

@@ -1,3 +1,5 @@
+> Historical design/evidence for the retired v1 profile. See README.md and the compact registry witness plan for current runtime.
+
 # Independent observer architecture and implementation order
 
 Status: compact shared-profile code implemented locally, updated 2026-10-16. The active daily Vercel cron pulls a signed global registry head and, when it advances, one Merkle consistency path. It retains the accepted root and bounded findings in observer-owned Postgres and signs a version-2 global witness. The public read route verifies the retained signature before returning it. A real production deployment, independent key delivery and the 1Bridge app-side comparator remain unverified. The observer never participates in a release decision.

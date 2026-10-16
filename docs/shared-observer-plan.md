@@ -1,3 +1,5 @@
+> Historical design/evidence for the retired v1 profile. See README.md and the compact registry witness plan for current runtime.
+
 # Multi-tenant pull observer implementation plan
 
 Implementation contract and verification record. The shared profile is additive; the original single-feed routes remain available separately.

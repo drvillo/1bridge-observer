@@ -1,3 +1,5 @@
+> Historical design/evidence for the retired v1 profile. See README.md and the compact registry witness plan for current runtime.
+
 # Bounded source client verification profile
 
 The `v1` pull transport lives in `src/lib/source.ts`. It is deliberately not an observer coverage certificate. `discoverFeedHead` verifies the operator's independently pinned dual-signed anchor, structurally parses the source's checkpoint, and labels the target `provisional: true`. It does not authenticate a rotated checkpoint signer or accept history. The process-local `verifySourceTarget` in `src/lib/verify-source.ts` fetches one fixed target, replays every checkpoint and leaf against that pinned authority, checks the exact discovered target bytes and returns a verified snapshot within an explicit leaf/checkpoint budget. It retains nothing across invocations. The bounded `pollObserverOnce` core now stages exact bytes and accepts a complete replayed target under a fenced database lease, but no production route invokes it yet.

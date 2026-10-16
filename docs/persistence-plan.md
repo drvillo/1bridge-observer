@@ -1,3 +1,5 @@
+> Historical design/evidence for the retired v1 profile. See README.md and the compact registry witness plan for current runtime.
+
 # Durable observer store increment plan
 
 > This is a reviewed-before-code increment under the Superpowers test-driven workflow. It builds storage only. Until a source puller and authority replay invoke it, the observer makes no coverage claim.
