@@ -35,7 +35,7 @@ export async function transaction<T>(store: ObserverStore, work: (client: PoolCl
   }
 }
 
-/** Opens one small, customer-owned Postgres pool under a pre-created schema. */
+/** Opens one small, observer-operator-owned Postgres pool under a pre-created schema. */
 export function openObserverStore(connectionString: string, schema = 'public'): ObserverStore {
   if (typeof connectionString !== 'string' || !connectionString) throw new TypeError('Expected observer database URL')
   if (typeof schema !== 'string' || !SCHEMA.test(schema)) throw new TypeError('Expected simple observer schema name')
