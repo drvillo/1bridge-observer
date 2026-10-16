@@ -1,7 +1,7 @@
 import { canonicalBytes } from '@drvillo/1bridge-authority'
 import { createHash } from 'node:crypto'
 import { authorizedBearer } from '../../../../lib/bearer'
-import { loadSharedPollContext } from '../../../../lib/shared-poll-run'
+import { loadRegistryWitnessContext } from '../../../../lib/registry-witness-context'
 import { pollRegistryWitnessOnce } from '../../../../lib/registry-witness-poll'
 import { installObserverSchema, openObserverStore } from '../../../../lib/store'
 
@@ -13,7 +13,7 @@ export async function GET(request: Request): Promise<Response> {
     return new Response('Unauthorized', { status: 401 })
   }
   try {
-    const context = await loadSharedPollContext(process.env)
+    const context = await loadRegistryWitnessContext(process.env)
     const store = openObserverStore(context.config.databaseUrl, context.config.databaseSchema)
     try {
       await installObserverSchema(store)
