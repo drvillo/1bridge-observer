@@ -6,7 +6,27 @@ const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/
 export interface ObserverStore { close(): Promise<void> }
 
 interface StoreConnection { pool: pg.Pool; schema: string }
-const connections = new WeakMap<ObserverStore, StoreConnection>()
+const STORE_CONNECTIONS_KEY = Symbol.for('1bridge-observer.store-connections')
+const RUNTIME_STORE_KEY = Symbol.for('1bridge-observer.runtime-store')
+
+interface RuntimeObserverStoreState {
+  connectionString: string
+  schema: string
+  store: ObserverStore
+}
+
+interface ObserverStoreGlobal {
+  [STORE_CONNECTIONS_KEY]?: WeakMap<ObserverStore, StoreConnection>
+  [RUNTIME_STORE_KEY]?: RuntimeObserverStoreState
+}
+
+function observerStoreGlobal(): typeof globalThis & ObserverStoreGlobal {
+  return globalThis as typeof globalThis & ObserverStoreGlobal
+}
+
+const storeGlobal = observerStoreGlobal()
+const connections = storeGlobal[STORE_CONNECTIONS_KEY] ?? new WeakMap<ObserverStore, StoreConnection>()
+storeGlobal[STORE_CONNECTIONS_KEY] = connections
 
 function connectionFor(store: ObserverStore): StoreConnection {
   const connection = connections.get(store)
@@ -44,6 +64,29 @@ export function openObserverStore(connectionString: string, schema = 'public'): 
   const store: ObserverStore = Object.freeze({ close: async () => { connections.delete(store); await pool.end() } })
   connections.set(store, { pool, schema })
   return store
+}
+
+export function getRuntimeObserverStore(connectionString: string, schema = 'public'): ObserverStore {
+  const runtime = observerStoreGlobal()
+  const current = runtime[RUNTIME_STORE_KEY]
+  if (current) {
+    if (current.connectionString !== connectionString || current.schema !== schema) {
+      throw new TypeError('Observer runtime store configuration changed')
+    }
+    return current.store
+  }
+
+  const store = openObserverStore(connectionString, schema)
+  runtime[RUNTIME_STORE_KEY] = { connectionString, schema, store }
+  return store
+}
+
+export async function closeRuntimeObserverStore(): Promise<void> {
+  const runtime = observerStoreGlobal()
+  const current = runtime[RUNTIME_STORE_KEY]
+  if (!current) return
+  delete runtime[RUNTIME_STORE_KEY]
+  await current.store.close()
 }
 
 /** Installs or upgrades the reviewed observer schema atomically on one connection. */
