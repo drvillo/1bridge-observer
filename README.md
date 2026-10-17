@@ -14,7 +14,7 @@ Routine tests use a local synthetic source and a separate Postgres. The opt-in l
 
 ### 1. Install
 
-Use a Node.js release that supports Next.js 16, and pnpm 10.29.3.
+Use Node.js 22.6 or newer (the deployment migrator uses Node's TypeScript stripping), and pnpm 10.29.3.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -47,6 +47,24 @@ CREATE SCHEMA observer AUTHORIZATION postgres;
 The pooler username looks like `postgres.[project-ref]`. The database role is the part before the dot, `postgres`, unless you created another role. That role needs `USAGE` and `CREATE` on the schema. Owning the schema provides both.
 
 v1–v5 migrations run in one transaction and check the installed catalog fingerprint. The v5 tables hold the compact witness cursor, signed reports and bounded findings; legacy v1–v4 rows remain historical.
+
+#### Apply migrations explicitly
+
+`installObserverSchema` is the migration engine. It reads the immutable `schema.sql` and `schema-v2.sql` through `schema-v5.sql` files, checks the installed version and catalog fingerprint, takes an advisory transaction lock, and applies every pending version in one transaction. Production routes never install or upgrade the schema; they require this deployment command to succeed first.
+
+Deployments should apply migrations before building instead of waiting for that first request:
+
+```sh
+DATABASE_URL='postgresql://...' OBSERVER_SCHEMA='observer' pnpm db:migrate:deploy
+```
+
+The command is idempotent: it installs a fresh schema, advances a recognized older schema, or verifies that v5 is already current. It fails on a missing schema, unsupported version, or catalog drift. It never creates the configured Postgres schema; complete the `CREATE SCHEMA` and role grant described above first.
+
+For a locally linked Vercel project, you can run the command with one environment's downloaded variables without committing an env file:
+
+```sh
+vercel env run -e preview -- pnpm db:migrate:deploy
+```
 
 ### 3. Pin the registry
 
@@ -81,7 +99,17 @@ What each name means, and where the value comes from, is in [Environment variabl
 
 ### 6. Deploy
 
-`vercel.json` calls `GET /api/registry-witness/poll` daily at 08:00 UTC. One invocation requests the latest signed head and, if it changed, one consistency proof. It signs a fresh report timestamp after an unchanged valid head or a retained protocol finding. A source outage returns `unavailable`, preserves the last accepted root, and never blocks 1Bridge. Invoke the protected route manually with the same bearer token when you need another observation. Public `GET /api/registry-witness/latest` returns the latest signed global report. Pin the observer public key independently before trusting it.
+`vercel.json` runs `pnpm db:migrate:deploy && pnpm build`, then calls `GET /api/registry-witness/poll` daily at 08:00 UTC. The Vercel build environment therefore needs `DATABASE_URL` and `OBSERVER_SCHEMA`, and a failed migration stops the deployment before `next build`. Warm function instances reuse one small Postgres pool for reads and polls; runtime requests do not take migration locks or close that pool after each response. One invocation requests the latest signed head and, if it changed, one consistency proof. It signs a fresh report timestamp after an unchanged valid head or a retained protocol finding. A source outage returns `unavailable`, preserves the last accepted root, and never blocks 1Bridge. Invoke the protected route manually with the same bearer token when you need another observation. Public `GET /api/registry-witness/latest` returns the latest signed global report. Pin the observer public key independently before trusting it.
+
+To deploy an isolated Preview, Production, or custom environment:
+
+1. Provision a separate Postgres database, or at minimum a separate observer-owned schema. Do not point Preview builds at the Production observer schema: every build runs the migrator.
+2. Create that schema and give the connection role `USAGE` and `CREATE` on it.
+3. Configure all shared-profile variables from [Environment variables](#environment-variables) for that Vercel environment. Use an environment-specific `DATABASE_URL`, `OBSERVER_SCHEMA`, `CRON_SECRET`, and observer signing keypair. The publisher public key and signed genesis may be the same only when the environment monitors the same registry publisher.
+4. Deploy normally. Vercel exposes scoped variables during the build and function runtime, so the build migrates the selected database and the deployed routes use the same configuration.
+5. Verify `/api/health`, invoke the protected poll once, then confirm `/api/registry-witness/latest` returns the new environment's signed report.
+
+As with any build-time database migration, the schema may be upgraded even if the later Next.js build fails. Keep migrations backward compatible with the currently deployed application, and take a database backup before a destructive migration.
 
 The observer retains bounded evidence for parsed conflicting heads and proofs, and a typed finding when parsing fails. A rejected consistency path for a candidate head resolves when that same head is later accepted with a valid path; signature failures and rollbacks remain findings for operator review. The authority report signer accepts at most 10,000 unresolved finding IDs. A malicious source that drives beyond that bound requires operator investigation and a subsequent protocol revision; it cannot block 1Bridge operations. Do not describe the last signed report as current while its finding set or timestamp is stale.
 
