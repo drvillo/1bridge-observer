@@ -22,6 +22,7 @@ it.skipIf(!enabled)('witnesses the exact two-feed registry backlog without custo
     const config = loadSharedObserverConfig({ NODE_ENV: 'test',
       SOURCE_BASE_URL: env.OBSERVER_LIVE_SOURCE_BASE_URL, DATABASE_URL: env.OBSERVER_TEST_DATABASE_URL,
       OBSERVER_SCHEMA: schema, CRON_SECRET: 'x'.repeat(32),
+      REGISTRY_SOURCE_API_KEY: env.REGISTRY_SOURCE_API_KEY,
       REGISTRY_PUBLISHER_PUBLIC_KEY: env.OBSERVER_LIVE_REGISTRY_PUBLIC_KEY,
       REGISTRY_SIGNED_GENESIS: env.OBSERVER_LIVE_REGISTRY_GENESIS })
     const store = openObserverStore(config.databaseUrl, config.databaseSchema)

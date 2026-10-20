@@ -8,7 +8,8 @@ it('loads the global poll signer and rejects mismatched signing keys', async () 
   const key = await generateSigningKey()
   const other = await generateSigningKey()
   const env = { NODE_ENV: 'test' as const, SOURCE_BASE_URL: 'https://source.example', DATABASE_URL: 'postgres://user:pass@db.example/observer',
-    CRON_SECRET: 'x'.repeat(32), REGISTRY_PUBLISHER_PUBLIC_KEY: vector.publisherPublicKey,
+    CRON_SECRET: 'x'.repeat(32), REGISTRY_SOURCE_API_KEY: 'k'.repeat(32),
+    REGISTRY_PUBLISHER_PUBLIC_KEY: vector.publisherPublicKey,
     REGISTRY_SIGNED_GENESIS: encodeBase64Url(canonicalBytes(vector.genesis)),
     OBSERVER_SIGNING_PRIVATE_KEY: await exportSigningPrivateKey(key.privateKey),
     OBSERVER_SIGNING_PUBLIC_KEY: await exportSigningPublicKey(key.publicKey) }

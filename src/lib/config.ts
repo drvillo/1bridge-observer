@@ -16,6 +16,7 @@ export interface SharedReportReadConfig {
 
 export interface SharedObserverConfig extends SharedReportReadConfig {
   sourceBaseUrl: string
+  registrySourceApiKey: string
   cronSecret: string
 }
 
@@ -56,7 +57,11 @@ export function loadSharedObserverConfig(env: Environment): SharedObserverConfig
   const report = loadSharedReportReadConfig(env)
   const cronSecret = env.CRON_SECRET
   if (!cronSecret || Buffer.byteLength(cronSecret, 'utf8') < 32) throw new Error('Invalid CRON_SECRET')
-  return { sourceBaseUrl, ...report, cronSecret }
+  const registrySourceApiKey = env.REGISTRY_SOURCE_API_KEY
+  if (!registrySourceApiKey || Buffer.byteLength(registrySourceApiKey, 'utf8') < 32) {
+    throw new Error('Invalid REGISTRY_SOURCE_API_KEY')
+  }
+  return { sourceBaseUrl, ...report, cronSecret, registrySourceApiKey }
 }
 
 export function loadSharedReportReadConfig(env: Environment): SharedReportReadConfig {

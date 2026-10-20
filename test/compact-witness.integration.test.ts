@@ -33,6 +33,7 @@ function runtimeDatabaseUrl(): string {
 function config(publisherPublicKey = vector.publisherPublicKey, genesis = vector.genesis) {
   return loadSharedObserverConfig({ NODE_ENV: 'production', SOURCE_BASE_URL: 'https://source.example/',
     DATABASE_URL: databaseUrl, OBSERVER_SCHEMA: 'observer_compact_witness', CRON_SECRET: 'x'.repeat(32),
+    REGISTRY_SOURCE_API_KEY: 'k'.repeat(32),
     REGISTRY_PUBLISHER_PUBLIC_KEY: publisherPublicKey,
     REGISTRY_SIGNED_GENESIS: encoded(genesis) })
 }
@@ -101,6 +102,7 @@ describe('compact shared registry witness', () => {
       vi.stubEnv('OBSERVER_SIGNING_PUBLIC_KEY', await authority.exportSigningPublicKey(signer.publicKey))
       vi.stubEnv('OBSERVER_SIGNING_PRIVATE_KEY', await authority.exportSigningPrivateKey(signer.privateKey))
       vi.stubEnv('SOURCE_BASE_URL', 'https://source.example/')
+      vi.stubEnv('REGISTRY_SOURCE_API_KEY', 'k'.repeat(32))
       vi.stubEnv('CRON_SECRET', 'x'.repeat(32))
       const published = await latestWitness()
       expect(published.status).toBe(200)
@@ -138,6 +140,7 @@ describe('compact shared registry witness', () => {
     vi.stubEnv('OBSERVER_SIGNING_PUBLIC_KEY', await authority.exportSigningPublicKey(signer.publicKey))
     vi.stubEnv('OBSERVER_SIGNING_PRIVATE_KEY', await authority.exportSigningPrivateKey(signer.privateKey))
     vi.stubEnv('SOURCE_BASE_URL', 'https://source.example/')
+    vi.stubEnv('REGISTRY_SOURCE_API_KEY', 'k'.repeat(32))
     vi.stubEnv('CRON_SECRET', 'x'.repeat(32))
     source(vector.headOne)
 

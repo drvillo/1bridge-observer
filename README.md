@@ -95,6 +95,8 @@ On Vercel, open the project and go to **Settings → Environment Variables**. Ad
 
 You generate `CRON_SECRET` (`openssl rand -base64 32`). It has to be at least 32 UTF-8 bytes. Vercel Cron reads that project variable and calls `GET /api/registry-witness/poll` with `Authorization: Bearer <CRON_SECRET>`.
 
+Generate a separate `REGISTRY_SOURCE_API_KEY` with at least 32 UTF-8 bytes and set the same value in the matching 1Bridge server environment. The observer sends it only as a bearer header on registry `head` and `consistency` requests. Set it in ignored `.env.local` for local testing and as a server-only Vercel variable for deployment; use a distinct key per environment. Deploy this observer header before 1Bridge enables its registry guard so polling continues during rollout.
+
 What each name means, and where the value comes from, is in [Environment variables](#environment-variables).
 
 ### 6. Deploy
@@ -105,7 +107,7 @@ To deploy an isolated Preview, Production, or custom environment:
 
 1. Provision a separate Postgres database, or at minimum a separate observer-owned schema. Do not point Preview builds at the Production observer schema: every build runs the migrator.
 2. Create that schema and give the connection role `USAGE` and `CREATE` on it.
-3. Configure all shared-profile variables from [Environment variables](#environment-variables) for that Vercel environment. Use an environment-specific `DATABASE_URL`, `OBSERVER_SCHEMA`, `CRON_SECRET`, and observer signing keypair. The publisher public key and signed genesis may be the same only when the environment monitors the same registry publisher.
+3. Configure all shared-profile variables from [Environment variables](#environment-variables) for that Vercel environment. Use an environment-specific `DATABASE_URL`, `OBSERVER_SCHEMA`, `CRON_SECRET`, `REGISTRY_SOURCE_API_KEY`, and observer signing keypair. The publisher public key and signed genesis may be the same only when the environment monitors the same registry publisher.
 4. Deploy normally. Vercel exposes scoped variables during the build and function runtime, so the build migrates the selected database and the deployed routes use the same configuration.
 5. Verify `/api/health`, invoke the protected poll once, then confirm `/api/registry-witness/latest` returns the new environment's signed report.
 
@@ -191,6 +193,10 @@ Schema name. If you omit it, the service uses `public`. You create the schema an
 **`CRON_SECRET`**
 
 A secret you generate, at least 32 UTF-8 bytes. `openssl rand -base64 32` is enough. You paste it into the Vercel project (and into `.env.local` for a local server). Vercel Cron sends it as `Authorization: Bearer` on `GET /api/registry-witness/poll`. A manual poll uses the same header.
+
+**`REGISTRY_SOURCE_API_KEY`**
+
+A separate server-only secret of at least 32 UTF-8 bytes, shared with the matching 1Bridge deployment. The observer sends it in `Authorization: Bearer` on every outgoing registry request. Missing or weak values prevent a poll before any source fetch. Never put it in `SOURCE_BASE_URL` or a browser-visible variable.
 
 **`OBSERVER_SIGNING_PRIVATE_KEY`**
 

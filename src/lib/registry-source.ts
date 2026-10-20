@@ -8,7 +8,7 @@ const HEAD_LIMIT = 64 * 1024
 const CHECKPOINT_LIMIT = 64 * 1024
 const CONSISTENCY_LIMIT = 16 * 1024
 
-export interface RegistrySourceConfig { sourceBaseUrl: string }
+export interface RegistrySourceConfig { sourceBaseUrl: string; registrySourceApiKey: string }
 export interface RegistryHead {
   provisional: true
   checkpointHash: Hash
@@ -80,6 +80,9 @@ async function responseBytes(response: Response, limit: number): Promise<Uint8Ar
 
 async function get(config: RegistrySourceConfig, route: string, limit: number,
   params?: Record<string, string>, options: SourceRequestOptions = {}): Promise<unknown> {
+  if (!config.registrySourceApiKey || Buffer.byteLength(config.registrySourceApiKey, 'utf8') < 32) {
+    throw new TypeError('Invalid registry source API key')
+  }
   const timeoutMs = options.timeoutMs ?? 10_000
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
     throw new TypeError('Invalid registry source timeout')
@@ -90,7 +93,8 @@ async function get(config: RegistrySourceConfig, route: string, limit: number,
   try {
     let response: Response
     try { response = await fetch(url, { method: 'GET', redirect: 'error', cache: 'no-store',
-      signal: controller.signal, headers: { accept: 'application/json' } }) }
+      signal: controller.signal, headers: { accept: 'application/json',
+        authorization: `Bearer ${config.registrySourceApiKey}` } }) }
     catch { throw new SourceTransportError(controller.signal.aborted
       ? 'Registry request timed out' : 'Registry transport unavailable') }
     if (!response.ok) {
