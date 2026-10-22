@@ -68,7 +68,7 @@ vercel env run -e preview -- pnpm db:migrate:deploy
 
 ### 3. Pin the registry
 
-The [registry publisher](#registry-publisher) is the 1Bridge operator who signs the global [registry](#registry). You are the [observer operator](#observer-operator). Their private key stays with them. You configure their public key.
+The [registry publisher](#registry-publisher) is the 1Bridge operator whose one private key signs governance feed and global [registry](#registry) checkpoints. You are the [observer operator](#observer-operator). Their private key stays with them. You configure their public key.
 
 Get two values from that publisher on a channel outside the host you will poll. A 1Bridge release record, a key-ceremony note, or a comparison you make with them is that channel.
 
@@ -255,7 +255,7 @@ The person or team deploying this repository. You own the Vercel project, the Po
 
 ### Registry publisher
 
-The 1Bridge operator who holds the ECDSA P-256 private key for the global governance registry. That party signs the empty genesis and every later registry checkpoint. In production this is the team that runs 1Bridge. A customer workspace is a different party. The observer operator is a different party again.
+The 1Bridge operator who holds the ECDSA P-256 private key shared by governance feed and global registry checkpoint signing. That party signs the empty registry genesis and every later registry checkpoint. In production this is the team that runs 1Bridge. A customer workspace is a different party. The observer operator is a different party again.
 
 You get their public key and the signed genesis from them. A 1Bridge release record, a key-ceremony note, or a value you compare with them in person is the usual source. The host in `SOURCE_BASE_URL` may be run by the same organization. The bytes you configure still come from that outside record, so a substituted host is checked against a key you already hold.
 
