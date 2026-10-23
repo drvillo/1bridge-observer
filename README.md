@@ -33,18 +33,7 @@ To check the same suite against a running **local** Supabase Postgres container,
 
 Provision Postgres that you operate. A Supabase project works. Copy the connection string from [Supabase `DATABASE_URL`](#supabase-database_url).
 
-You create the schema before the first deploy. The pool logs in with this operator's database role.
-
-- Dedicated database: leave `OBSERVER_SCHEMA` as `public`.
-- Shared database, including a Supabase project that also hosts other Supabase products: create a schema for this service and set `OBSERVER_SCHEMA` to that name.
-
-On Supabase, open the SQL editor and run:
-
-```sql
-CREATE SCHEMA observer AUTHORIZATION postgres;
-```
-
-The pooler username looks like `postgres.[project-ref]`. The database role is the part before the dot, `postgres`, unless you created another role. That role needs `USAGE` and `CREATE` on the schema. Owning the schema provides both.
+The migrations create schema `observer` and qualify every table, index, and sequence with that name. `search_path` cannot redirect them into `public`. On a shared Supabase database this keeps the objects out of the 1bridge `public` schema. The connection role needs permission to create a schema; the Supabase `postgres` role has it. Leave `OBSERVER_SCHEMA` unset. If it is set to anything other than `observer`, startup and migration fail.
 
 v1–v5 migrations run in one transaction and check the installed catalog fingerprint. The v5 tables hold the compact witness cursor, signed reports and bounded findings; legacy v1–v4 rows remain historical.
 
@@ -55,10 +44,10 @@ v1–v5 migrations run in one transaction and check the installed catalog finger
 Deployments should apply migrations before building instead of waiting for that first request:
 
 ```sh
-DATABASE_URL='postgresql://...' OBSERVER_SCHEMA='observer' pnpm db:migrate:deploy
+DATABASE_URL='postgresql://...' pnpm db:migrate:deploy
 ```
 
-The command is idempotent: it installs a fresh schema, advances a recognized older schema, or verifies that v5 is already current. It fails on a missing schema, unsupported version, or catalog drift. It never creates the configured Postgres schema; complete the `CREATE SCHEMA` and role grant described above first.
+The command is idempotent: it installs a fresh `observer` schema, advances a recognized older schema, or verifies that v5 is already current. It fails on an unsupported version or catalog drift.
 
 For a locally linked Vercel project, you can run the command with one environment's downloaded variables without committing an env file:
 
@@ -101,13 +90,13 @@ What each name means, and where the value comes from, is in [Environment variabl
 
 ### 6. Deploy
 
-`vercel.json` runs `pnpm db:migrate:deploy && pnpm build`, then calls `GET /api/registry-witness/poll` daily at 08:00 UTC. The Vercel build environment therefore needs `DATABASE_URL` and `OBSERVER_SCHEMA`, and a failed migration stops the deployment before `next build`. Warm function instances reuse one small Postgres pool for reads and polls; runtime requests do not take migration locks or close that pool after each response. One invocation requests the latest signed head and, if it changed, one consistency proof. It signs a fresh report timestamp after an unchanged valid head or a retained protocol finding. A source outage returns `unavailable`, preserves the last accepted root, and never blocks 1Bridge. Invoke the protected route manually with the same bearer token when you need another observation. Public `GET /api/registry-witness/latest` returns the latest signed global report. Pin the observer public key independently before trusting it.
+`vercel.json` runs `pnpm db:migrate:deploy && pnpm build`, then calls `GET /api/registry-witness/poll` daily at 08:00 UTC. The Vercel build environment therefore needs `DATABASE_URL`, and a failed migration stops the deployment before `next build`. Do not set `OBSERVER_SCHEMA` unless the value is `observer`. Warm function instances reuse one small Postgres pool for reads and polls; runtime requests do not take migration locks or close that pool after each response. One invocation requests the latest signed head and, if it changed, one consistency proof. It signs a fresh report timestamp after an unchanged valid head or a retained protocol finding. A source outage returns `unavailable`, preserves the last accepted root, and never blocks 1Bridge. Invoke the protected route manually with the same bearer token when you need another observation. Public `GET /api/registry-witness/latest` returns the latest signed global report. Pin the observer public key independently before trusting it.
 
 To deploy an isolated Preview, Production, or custom environment:
 
-1. Provision a separate Postgres database, or at minimum a separate observer-owned schema. Do not point Preview builds at the Production observer schema: every build runs the migrator.
-2. Create that schema and give the connection role `USAGE` and `CREATE` on it.
-3. Configure all shared-profile variables from [Environment variables](#environment-variables) for that Vercel environment. Use an environment-specific `DATABASE_URL`, `OBSERVER_SCHEMA`, `CRON_SECRET`, `REGISTRY_SOURCE_API_KEY`, and observer signing keypair. The publisher public key and signed genesis may be the same only when the environment monitors the same registry publisher.
+1. Provision a Postgres database. The migrator creates schema `observer` in it. Do not point Preview builds at the Production database: every build runs the migrator.
+2. Give the connection role permission to create a schema. The Supabase `postgres` role already has it.
+3. Configure all shared-profile variables from [Environment variables](#environment-variables) for that Vercel environment. Use an environment-specific `DATABASE_URL`, `CRON_SECRET`, `REGISTRY_SOURCE_API_KEY`, and observer signing keypair. The publisher public key and signed genesis may be the same only when the environment monitors the same registry publisher.
 4. Deploy normally. Vercel exposes scoped variables during the build and function runtime, so the build migrates the selected database and the deployed routes use the same configuration.
 5. Verify `/api/health`, invoke the protected poll once, then confirm `/api/registry-witness/latest` returns the new environment's signed report.
 
@@ -123,7 +112,7 @@ For the 1Bridge registry source's full-prefix consistency-proof cost, set `OBSER
 
 `SOURCE_BASE_URL` is an HTTPS origin with no credentials, path, query, or fragment outside local development and tests. `GET /api/health` reports process liveness.
 
-For a local manual run, `SOURCE_BASE_URL=http://localhost:3000` is also accepted by `pnpm dev`; use a separate local observer schema and run the observer on another port, for example `pnpm exec next dev -p 3001`. The loopback exception applies only in development and tests. Production polling requires HTTPS, and a local observer sharing a Postgres instance with 1Bridge is a functional test, not evidence of independent operation. Invoke the protected poll after 1Bridge publishes a registry batch, then read `/api/registry-witness/latest` and compare the signed report in the 1Bridge Access screen with independently retained public pins.
+For a local manual run, `SOURCE_BASE_URL=http://localhost:3000` is also accepted by `pnpm dev`; use a separate local database and run the observer on another port, for example `pnpm exec next dev -p 3001`. The loopback exception applies only in development and tests. Production polling requires HTTPS, and a local observer sharing a Postgres instance with 1Bridge is a functional test, not evidence of independent operation. Invoke the protected poll after 1Bridge publishes a registry batch, then read `/api/registry-witness/latest` and compare the signed report in the 1Bridge Access screen with independently retained public pins.
 
 ## Supabase `DATABASE_URL`
 
@@ -188,7 +177,7 @@ Unpadded base64url of the canonical [signed empty registry genesis](#signed-empt
 
 **`OBSERVER_SCHEMA`**
 
-Schema name. If you omit it, the service uses `public`. You create the schema and grant the connection role `USAGE` and `CREATE` before the first request. The name starts with a letter or underscore, then contains only letters, digits, and underscores, and is at most 63 characters.
+Optional check. The migrations always use schema `observer`. Omit this variable. A value other than `observer` fails configuration and migration.
 
 **`CRON_SECRET`**
 
@@ -245,7 +234,7 @@ A root witnesses append-only publication. It does not attest actor authority, ac
 
 Run `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm test:integration` and `pnpm build`. Integration uses disposable Postgres and tests fresh installation, preserved legacy upgrades, compact root acceptance, findings, restart, concurrency, outage recovery and public route contracts. `test/store.supabase.test.sh` runs the same suite in a disposable database on local Supabase Postgres. Historical benchmark artifacts remain evidence of the retired profile, not compact-profile performance claims.
 
-For the optional real-source check, use a **disposable observer database** and set `OBSERVER_TEST_DATABASE_URL`, `OBSERVER_LIVE_SOURCE_BASE_URL`, `OBSERVER_LIVE_REGISTRY_PUBLIC_KEY`, `OBSERVER_LIVE_REGISTRY_GENESIS`, `OBSERVER_LIVE_REGISTRY_TARGET` (the exact expected 64-character checkpoint hash), and `OBSERVER_LIVE_EXPECTED_REGISTRY_SIZE` (at least four). Run `pnpm exec vitest run --config vitest.integration.config.ts test/live-source.integration.test.ts`. The test creates and drops a unique observer schema itself; it is skipped unless every value is configured. It authenticates the signed report and checks that the accepted cursor matches the expected size and hash. The source database is not modified by this test. Third-party deployed cron smoke and freshness SLA remain unverified.
+For the optional real-source check, use a **disposable observer database** and set `OBSERVER_TEST_DATABASE_URL`, `OBSERVER_LIVE_SOURCE_BASE_URL`, `OBSERVER_LIVE_REGISTRY_PUBLIC_KEY`, `OBSERVER_LIVE_REGISTRY_GENESIS`, `OBSERVER_LIVE_REGISTRY_TARGET` (the exact expected 64-character checkpoint hash), and `OBSERVER_LIVE_EXPECTED_REGISTRY_SIZE` (at least four). Run `pnpm exec vitest run --config vitest.integration.config.ts test/live-source.integration.test.ts`. The test creates and drops a disposable database itself; it is skipped unless every value is configured. It authenticates the signed report and checks that the accepted cursor matches the expected size and hash. The source database is not modified by this test. Third-party deployed cron smoke and freshness SLA remain unverified.
 
 ## Appendix: Roles and terms
 

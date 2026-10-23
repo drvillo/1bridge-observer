@@ -1,6 +1,7 @@
 -- Observer schema v4: durable shared-registry cursor and exact staged evidence.
 -- Run only inside the installer's transaction after checking the installed catalog.
 SELECT pg_advisory_xact_lock(6704462056185601401);
+SELECT set_config('search_path', 'observer', true);
 
 DO $observer_v4_preflight$
 DECLARE
@@ -15,11 +16,11 @@ BEGIN
     OR previous_digest IS NULL OR previous_digest !~ '^[0-9a-f]{64}$' THEN
     RAISE EXCEPTION 'Missing or malformed observer migration digest';
   END IF;
-  IF to_regclass(format('%I.observer_schema_versions', current_schema())) IS NULL THEN
+  IF to_regclass(format('%I.observer_schema_versions', 'observer')) IS NULL THEN
     RAISE EXCEPTION 'Observer v3 schema must be installed before v4';
   END IF;
   SELECT count(*), min(version), min(schema_digest)
-    INTO marker_count, marker_version, marker_digest FROM observer_schema_versions;
+    INTO marker_count, marker_version, marker_digest FROM observer.observer_schema_versions;
   IF marker_count <> 1 OR NOT (
     (marker_version = 3 AND marker_digest = previous_digest)
     OR (marker_version = 4 AND marker_digest = expected_digest)
@@ -30,7 +31,7 @@ BEGIN
     SELECT count(*) INTO table_count
       FROM pg_class AS object
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema()
+      WHERE namespace.nspname = 'observer'
         AND object.relkind IN ('r', 'p')
         AND object.relname IN (
           'observer_schema_versions', 'observer_feeds', 'observer_cursors',
@@ -49,12 +50,12 @@ BEGIN
   PERFORM set_config('observer.migrating_from_v3',
     CASE WHEN marker_version = 3 THEN 'yes' ELSE 'no' END, true);
   IF marker_version = 3 THEN
-    EXECUTE 'ALTER TABLE observer_schema_versions DROP CONSTRAINT observer_schema_versions_version_check';
+    EXECUTE 'ALTER TABLE observer.observer_schema_versions DROP CONSTRAINT observer_schema_versions_version_check';
   END IF;
 END;
 $observer_v4_preflight$;
 
-CREATE TABLE IF NOT EXISTS observer_registry_cursor (
+CREATE TABLE IF NOT EXISTS observer.observer_registry_cursor (
   singleton smallint PRIMARY KEY DEFAULT 1 CHECK (singleton = 1),
   publisher_key_id text NOT NULL CHECK (publisher_key_id ~ '^[0-9a-f]{64}$'),
   genesis_hash text NOT NULL CHECK (genesis_hash ~ '^[0-9a-f]{64}$'),
@@ -79,13 +80,13 @@ CREATE TABLE IF NOT EXISTS observer_registry_cursor (
   CHECK (accepted_size > 0 OR accepted_hash = genesis_hash)
 );
 
-CREATE TABLE IF NOT EXISTS observer_registry_entries (
+CREATE TABLE IF NOT EXISTS observer.observer_registry_entries (
   entry_index bigint PRIMARY KEY CHECK (entry_index BETWEEN 0 AND 9007199254740991),
   leaf_hash text NOT NULL CHECK (leaf_hash ~ '^[0-9a-f]{64}$'),
   entry_bytes bytea NOT NULL CHECK (octet_length(entry_bytes) BETWEEN 1 AND 32768)
 );
 
-CREATE TABLE IF NOT EXISTS observer_registry_checkpoints (
+CREATE TABLE IF NOT EXISTS observer.observer_registry_checkpoints (
   position bigint PRIMARY KEY CHECK (position BETWEEN 0 AND 9007199254740991),
   statement_hash text NOT NULL UNIQUE CHECK (statement_hash ~ '^[0-9a-f]{64}$'),
   checkpoint_size bigint NOT NULL CHECK (checkpoint_size BETWEEN 0 AND 9007199254740991),
@@ -95,7 +96,7 @@ CREATE TABLE IF NOT EXISTS observer_registry_checkpoints (
   CHECK ((position = 0) = (previous_hash IS NULL))
 );
 
-CREATE TABLE IF NOT EXISTS observer_registry_staged_entries (
+CREATE TABLE IF NOT EXISTS observer.observer_registry_staged_entries (
   target_hash text NOT NULL CHECK (target_hash ~ '^[0-9a-f]{64}$'),
   entry_index bigint NOT NULL CHECK (entry_index BETWEEN 0 AND 9007199254740991),
   leaf_hash text NOT NULL CHECK (leaf_hash ~ '^[0-9a-f]{64}$'),
@@ -103,7 +104,7 @@ CREATE TABLE IF NOT EXISTS observer_registry_staged_entries (
   PRIMARY KEY (target_hash, entry_index)
 );
 
-CREATE TABLE IF NOT EXISTS observer_registry_staged_checkpoints (
+CREATE TABLE IF NOT EXISTS observer.observer_registry_staged_checkpoints (
   target_hash text NOT NULL CHECK (target_hash ~ '^[0-9a-f]{64}$'),
   position bigint NOT NULL CHECK (position BETWEEN 1 AND 9007199254740991),
   statement_hash text NOT NULL CHECK (statement_hash ~ '^[0-9a-f]{64}$'),
@@ -115,7 +116,7 @@ CREATE TABLE IF NOT EXISTS observer_registry_staged_checkpoints (
   UNIQUE (target_hash, statement_hash)
 );
 
-CREATE TABLE IF NOT EXISTS observer_registry_findings (
+CREATE TABLE IF NOT EXISTS observer.observer_registry_findings (
   finding_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   target_hash text CHECK (target_hash ~ '^[0-9a-f]{64}$'),
   finding_type text NOT NULL CHECK (finding_type IN ('source_nonconformance', 'invalid_replay', 'fork')),
@@ -125,9 +126,9 @@ CREATE TABLE IF NOT EXISTS observer_registry_findings (
   UNIQUE (finding_type, evidence_bytes)
 );
 
-CREATE TABLE IF NOT EXISTS observer_aggregate_reports (
+CREATE TABLE IF NOT EXISTS observer.observer_aggregate_reports (
   report_hash text PRIMARY KEY CHECK (report_hash ~ '^[0-9a-f]{64}$'),
-  registry_hash text NOT NULL REFERENCES observer_registry_checkpoints(statement_hash) ON DELETE RESTRICT,
+  registry_hash text NOT NULL REFERENCES observer.observer_registry_checkpoints(statement_hash) ON DELETE RESTRICT,
   observer_key_id text NOT NULL CHECK (observer_key_id ~ '^[0-9a-f]{64}$'),
   signed_report bytea NOT NULL CHECK (octet_length(signed_report) BETWEEN 1 AND 16384),
   registry_snapshot bytea NOT NULL CHECK (octet_length(registry_snapshot) BETWEEN 1 AND 33554432),
@@ -135,16 +136,16 @@ CREATE TABLE IF NOT EXISTS observer_aggregate_reports (
   created_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 CREATE INDEX IF NOT EXISTS observer_aggregate_reports_created_idx
-  ON observer_aggregate_reports(created_at DESC);
+  ON observer.observer_aggregate_reports(created_at DESC);
 
 DO $observer_v4_marker$
 DECLARE marker_version integer;
 BEGIN
-  SELECT version INTO marker_version FROM observer_schema_versions;
+  SELECT version INTO marker_version FROM observer.observer_schema_versions;
   IF marker_version = 3 THEN
-    UPDATE observer_schema_versions
+    UPDATE observer.observer_schema_versions
       SET version = 4, schema_digest = current_setting('observer.schema_digest');
-    EXECUTE 'ALTER TABLE observer_schema_versions ADD CONSTRAINT observer_schema_versions_version_check CHECK (version = 4)';
+    EXECUTE 'ALTER TABLE observer.observer_schema_versions ADD CONSTRAINT observer_schema_versions_version_check CHECK (version = 4)';
   END IF;
 END;
 $observer_v4_marker$;
@@ -163,7 +164,7 @@ BEGIN
         ORDER BY object.relname)
       FROM pg_class AS object
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     ),
     'columns', (
       SELECT jsonb_agg(jsonb_build_array(object.relname, column_entry.attnum,
@@ -176,7 +177,7 @@ BEGIN
       JOIN pg_attribute AS column_entry ON column_entry.attrelid = object.oid
       LEFT JOIN pg_attrdef AS default_entry
         ON default_entry.adrelid = object.oid AND default_entry.adnum = column_entry.attnum
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
         AND object.relkind IN ('r', 'p') AND column_entry.attnum > 0
         AND NOT column_entry.attisdropped
     ),
@@ -187,7 +188,7 @@ BEGIN
       FROM pg_constraint AS constraint_entry
       JOIN pg_class AS object ON object.oid = constraint_entry.conrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     ),
     'indexes', (
       SELECT jsonb_agg(jsonb_build_array(object.relname, index_object.relname,
@@ -196,7 +197,7 @@ BEGIN
       JOIN pg_class AS object ON object.oid = index_entry.indrelid
       JOIN pg_class AS index_object ON index_object.oid = index_entry.indexrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     ),
     'triggers', (
       SELECT jsonb_agg(jsonb_build_array(object.relname, trigger_entry.tgname,
@@ -204,7 +205,7 @@ BEGIN
       FROM pg_trigger AS trigger_entry
       JOIN pg_class AS object ON object.oid = trigger_entry.tgrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
         AND NOT trigger_entry.tgisinternal
     ),
     'policies', (
@@ -216,7 +217,7 @@ BEGIN
       FROM pg_policy AS policy_entry
       JOIN pg_class AS object ON object.oid = policy_entry.polrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     ),
     'sequences', (
       SELECT jsonb_agg(jsonb_build_array(object.relname, sequence_entry.seqtypid::regtype::text,
@@ -226,14 +227,14 @@ BEGIN
       FROM pg_sequence AS sequence_entry
       JOIN pg_class AS object ON object.oid = sequence_entry.seqrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     )
   )::text) INTO actual_fingerprint;
 
-  SELECT catalog_fingerprint INTO stored_fingerprint FROM observer_schema_versions WHERE version = 4;
+  SELECT catalog_fingerprint INTO stored_fingerprint FROM observer.observer_schema_versions WHERE version = 4;
   IF stored_fingerprint IS DISTINCT FROM actual_fingerprint THEN
     IF current_setting('observer.migrating_from_v3', true) = 'yes' THEN
-      UPDATE observer_schema_versions SET catalog_fingerprint = actual_fingerprint WHERE version = 4;
+      UPDATE observer.observer_schema_versions SET catalog_fingerprint = actual_fingerprint WHERE version = 4;
     ELSE
       RAISE EXCEPTION 'Observer schema catalog has changed';
     END IF;

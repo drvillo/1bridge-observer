@@ -2,24 +2,33 @@ import { describe, expect, it, vi } from 'vitest'
 import { migrateObserverSchema } from '../scripts/migrate'
 import type { ObserverStore } from '../src/lib/store'
 
+const databaseUrl = 'postgresql://observer:secret@database.example/observer'
+
 describe('observer deployment migration', () => {
-  it('installs pending migrations in the configured schema and closes the store', async () => {
+  it('installs schema observer and closes the store', async () => {
     const close = vi.fn(async () => undefined)
     const store: ObserverStore = { close }
     const openStore = vi.fn(() => store)
     const installSchema = vi.fn(async () => undefined)
 
     await migrateObserverSchema(
-      { DATABASE_URL: 'postgresql://observer:secret@database.example/observer', OBSERVER_SCHEMA: 'staging_observer' },
+      { DATABASE_URL: databaseUrl, OBSERVER_SCHEMA: 'observer' },
       { openStore, installSchema },
     )
 
-    expect(openStore).toHaveBeenCalledWith(
-      'postgresql://observer:secret@database.example/observer',
-      'staging_observer',
-    )
+    expect(openStore).toHaveBeenCalledWith(databaseUrl)
     expect(installSchema).toHaveBeenCalledWith(store)
     expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a schema other than observer before opening a store', async () => {
+    const openStore = vi.fn()
+
+    await expect(migrateObserverSchema(
+      { DATABASE_URL: databaseUrl, OBSERVER_SCHEMA: 'public' },
+      { openStore, installSchema: vi.fn() },
+    )).rejects.toThrow('Invalid OBSERVER_SCHEMA')
+    expect(openStore).not.toHaveBeenCalled()
   })
 
   it('closes the store when a migration fails', async () => {
@@ -28,7 +37,7 @@ describe('observer deployment migration', () => {
     const migrationError = new Error('migration failed')
 
     await expect(migrateObserverSchema(
-      { DATABASE_URL: 'postgresql://observer:secret@database.example/observer' },
+      { DATABASE_URL: databaseUrl },
       { openStore: () => store, installSchema: async () => { throw migrationError } },
     )).rejects.toBe(migrationError)
     expect(close).toHaveBeenCalledOnce()

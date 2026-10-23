@@ -9,6 +9,7 @@ import { acceptRegistryWitness, readLatestRegistryWitness, readWitnessCursor,
 import { GET as latestWitness } from '../src/app/api/registry-witness/latest/route'
 import { GET as pollWitness } from '../src/app/api/registry-witness/poll/route'
 import { closeRuntimeObserverStore, installObserverSchema, openObserverStore } from '../src/lib/store'
+import { createDisposableDatabase } from './disposable-database'
 
 function requiredTestDatabaseUrl(): string {
   const value = process.env.OBSERVER_TEST_DATABASE_URL
@@ -16,12 +17,14 @@ function requiredTestDatabaseUrl(): string {
   return value
 }
 
-const databaseUrl = requiredTestDatabaseUrl()
+const adminUrl = requiredTestDatabaseUrl()
 const vector = JSON.parse(readFileSync(new URL('./shared-registry-v1.json', import.meta.url), 'utf8'))
-const inspector = new pg.Pool({ connectionString: databaseUrl, max: 1 })
 const encoded = (value: unknown) => authority.encodeBase64Url(authority.canonicalBytes(value))
 const runtimeRole = 'observer_compact_runtime'
 const runtimePassword = 'observer-runtime-test'
+let databaseUrl = adminUrl
+let dropDatabase: () => Promise<void> = async () => undefined
+let inspector = new pg.Pool({ connectionString: adminUrl, max: 1 })
 
 function runtimeDatabaseUrl(): string {
   const url = new URL(databaseUrl)
@@ -32,7 +35,7 @@ function runtimeDatabaseUrl(): string {
 
 function config(publisherPublicKey = vector.publisherPublicKey, genesis = vector.genesis) {
   return loadSharedObserverConfig({ NODE_ENV: 'production', SOURCE_BASE_URL: 'https://source.example/',
-    DATABASE_URL: databaseUrl, OBSERVER_SCHEMA: 'observer_compact_witness', CRON_SECRET: 'x'.repeat(32),
+    DATABASE_URL: databaseUrl, CRON_SECRET: 'x'.repeat(32),
     REGISTRY_SOURCE_API_KEY: 'k'.repeat(32),
     REGISTRY_PUBLISHER_PUBLIC_KEY: publisherPublicKey,
     REGISTRY_SIGNED_GENESIS: encoded(genesis) })
@@ -58,11 +61,15 @@ function source(head = vector.headTwo, proof: string[] = []) {
 
 describe('compact shared registry witness', () => {
   beforeAll(async () => {
+    const database = await createDisposableDatabase(adminUrl)
+    databaseUrl = database.databaseUrl
+    dropDatabase = database.drop
+    await inspector.end()
+    inspector = new pg.Pool({ connectionString: databaseUrl, max: 1 })
     await inspector.query(`CREATE ROLE ${runtimeRole} LOGIN PASSWORD '${runtimePassword}'`)
   })
   beforeEach(async () => {
-    await inspector.query('DROP SCHEMA observer_compact_witness CASCADE')
-    await inspector.query('CREATE SCHEMA observer_compact_witness')
+    await inspector.query('DROP SCHEMA IF EXISTS observer CASCADE')
   })
   afterEach(async () => {
     await closeRuntimeObserverStore()
@@ -70,15 +77,19 @@ describe('compact shared registry witness', () => {
     vi.unstubAllEnvs()
   })
   afterAll(async () => {
-    await inspector.query(`DROP OWNED BY ${runtimeRole}`)
-    await inspector.query(`DROP ROLE ${runtimeRole}`)
     await inspector.end()
+    await dropDatabase()
+    const admin = new pg.Client({ connectionString: adminUrl })
+    await admin.connect()
+    try {
+      await admin.query(`DROP ROLE IF EXISTS ${runtimeRole}`)
+    } finally { await admin.end() }
   })
 
   it('accepts a latest signed root without downloading registry entries or any workspace feed', async () => {
     const calls = source()
     const signer = await authority.generateSigningKey()
-    const store = openObserverStore(databaseUrl, 'observer_compact_witness')
+    const store = openObserverStore(databaseUrl)
     try {
       await installObserverSchema(store)
       const result = await pollRegistryWitnessOnce(store, config(), signer)
@@ -86,7 +97,7 @@ describe('compact shared registry witness', () => {
       expect(calls).toEqual(['/api/governance/v1/registry/head',
         '/api/governance/v1/registry/consistency'])
       expect((await inspector.query(
-        'SELECT accepted_size FROM observer_compact_witness.observer_witness_cursor')).rows)
+        'SELECT accepted_size FROM observer.observer_witness_cursor')).rows)
         .toEqual([{ accepted_size: String(vector.headTwo.statement.size) }])
       expect(result.report).toBeDefined()
       expect(await authority.verifyRegistryWitness(result.report!, vector.genesis, [],
@@ -96,7 +107,6 @@ describe('compact shared registry witness', () => {
       expect(second.report).toBeDefined()
       expect(calls.at(-1)).toBe('/api/governance/v1/registry/head')
       vi.stubEnv('DATABASE_URL', databaseUrl)
-      vi.stubEnv('OBSERVER_SCHEMA', 'observer_compact_witness')
       vi.stubEnv('REGISTRY_PUBLISHER_PUBLIC_KEY', vector.publisherPublicKey)
       vi.stubEnv('REGISTRY_SIGNED_GENESIS', encoded(vector.genesis))
       vi.stubEnv('OBSERVER_SIGNING_PUBLIC_KEY', await authority.exportSigningPublicKey(signer.publicKey))
@@ -119,22 +129,21 @@ describe('compact shared registry witness', () => {
 
   it('serves requests without access to migration metadata', async () => {
     const signer = await authority.generateSigningKey()
-    const store = openObserverStore(databaseUrl, 'observer_compact_witness')
+    const store = openObserverStore(databaseUrl)
     try {
       await installObserverSchema(store)
       source(vector.headOne)
       expect((await pollRegistryWitnessOnce(store, config(), signer)).status).toBe('accepted')
     } finally { await store.close() }
 
-    await inspector.query(`GRANT USAGE ON SCHEMA observer_compact_witness TO ${runtimeRole}`)
+    await inspector.query(`GRANT USAGE ON SCHEMA observer TO ${runtimeRole}`)
     await inspector.query(`GRANT SELECT, INSERT, UPDATE ON
-      observer_compact_witness.observer_witness_cursor,
-      observer_compact_witness.observer_witness_reports,
-      observer_compact_witness.observer_witness_findings TO ${runtimeRole}`)
-    await inspector.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA observer_compact_witness TO ${runtimeRole}`)
+      observer.observer_witness_cursor,
+      observer.observer_witness_reports,
+      observer.observer_witness_findings TO ${runtimeRole}`)
+    await inspector.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA observer TO ${runtimeRole}`)
 
     vi.stubEnv('DATABASE_URL', runtimeDatabaseUrl())
-    vi.stubEnv('OBSERVER_SCHEMA', 'observer_compact_witness')
     vi.stubEnv('REGISTRY_PUBLISHER_PUBLIC_KEY', vector.publisherPublicKey)
     vi.stubEnv('REGISTRY_SIGNED_GENESIS', encoded(vector.genesis))
     vi.stubEnv('OBSERVER_SIGNING_PUBLIC_KEY', await authority.exportSigningPublicKey(signer.publicKey))
@@ -153,7 +162,7 @@ describe('compact shared registry witness', () => {
 
   it('retains the prior root through an invalid extension and source outage', async () => {
     const signer = await authority.generateSigningKey()
-    const store = openObserverStore(databaseUrl, 'observer_compact_witness')
+    const store = openObserverStore(databaseUrl)
     try {
       await installObserverSchema(store)
       source(vector.headOne)
@@ -163,12 +172,12 @@ describe('compact shared registry witness', () => {
       expect(rejected.status).toBe('source_nonconforming')
       expect(rejected.report?.statement.unresolvedFindings.count).toBe(1)
       expect((await inspector.query(
-        'SELECT count(*)::integer AS count FROM observer_compact_witness.observer_witness_findings')).rows[0].count)
+        'SELECT count(*)::integer AS count FROM observer.observer_witness_findings')).rows[0].count)
         .toBe(1)
       vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
       expect((await pollRegistryWitnessOnce(store, config(), signer)).status).toBe('unavailable')
       const retained = await inspector.query(
-        'SELECT accepted_hash FROM observer_compact_witness.observer_witness_cursor')
+        'SELECT accepted_hash FROM observer.observer_witness_cursor')
       expect(retained.rows[0].accepted_hash)
         .toBe(await authority.registryCheckpointHash(vector.headOne.statement))
       source(vector.headTwo, vector.proofTwo)
@@ -186,7 +195,7 @@ describe('compact shared registry witness', () => {
     const genesis = await authority.signRegistryCheckpoint(statement, publisher)
     const resigned = await authority.signRegistryCheckpoint(statement, publisher)
     expect(resigned.signature).not.toBe(genesis.signature)
-    const store = openObserverStore(databaseUrl, 'observer_compact_witness')
+    const store = openObserverStore(databaseUrl)
     try {
       await installObserverSchema(store)
       source(resigned)
@@ -199,7 +208,7 @@ describe('compact shared registry witness', () => {
 
   it('fences a report snapshot when a new finding is committed', async () => {
     const signer = await authority.generateSigningKey()
-    const store = openObserverStore(databaseUrl, 'observer_compact_witness')
+    const store = openObserverStore(databaseUrl)
     try {
       await installObserverSchema(store)
       const pin = await verifyRegistryPin(config())
@@ -220,14 +229,14 @@ describe('compact shared registry witness', () => {
 
   it('retains a bounded exact finding for a large invalid signed head', async () => {
     const signer = await authority.generateSigningKey()
-    const store = openObserverStore(databaseUrl, 'observer_compact_witness')
+    const store = openObserverStore(databaseUrl)
     try {
       await installObserverSchema(store)
       source({ ...vector.genesis, signature: 'a'.repeat(30_000) })
       const result = await pollRegistryWitnessOnce(store, config(), signer)
       expect(result.status).toBe('source_nonconforming')
       const finding = await inspector.query(
-        'SELECT evidence_bytes FROM observer_compact_witness.observer_witness_findings')
+        'SELECT evidence_bytes FROM observer.observer_witness_findings')
       expect(finding.rows[0].evidence_bytes.length).toBeGreaterThan(16_384)
     } finally { await store.close() }
   })

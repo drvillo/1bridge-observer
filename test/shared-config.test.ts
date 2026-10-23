@@ -7,7 +7,7 @@ const vector = JSON.parse(readFileSync(new URL('./shared-registry-v1.json', impo
 const valid = {
   NODE_ENV: 'production', SOURCE_BASE_URL: 'https://evidence.example/',
   DATABASE_URL: 'postgresql://observer:private@db.example/observer?sslmode=require',
-  OBSERVER_SCHEMA: 'shared_observer', CRON_SECRET: 'a distinct observer cron secret of sufficient length',
+  CRON_SECRET: 'a distinct observer cron secret of sufficient length',
   REGISTRY_SOURCE_API_KEY: 'a distinct registry source credential with enough bytes',
   REGISTRY_PUBLISHER_PUBLIC_KEY: vector.publisherPublicKey,
   REGISTRY_SIGNED_GENESIS: encodeBase64Url(canonicalBytes(vector.genesis)),
@@ -18,7 +18,7 @@ describe('shared observer trust configuration', () => {
     const config = loadSharedObserverConfig(valid)
     expect(config).toMatchObject({ sourceBaseUrl: 'https://evidence.example',
       registrySourceApiKey: valid.REGISTRY_SOURCE_API_KEY,
-      databaseSchema: 'shared_observer', publisherPublicKeySpki: vector.publisherPublicKey })
+      databaseSchema: 'observer', publisherPublicKeySpki: vector.publisherPublicKey })
     expect('feedId' in config).toBe(false)
     const pin = await verifyRegistryPin(config)
     expect(pin.signedGenesis).toEqual(vector.genesis)
@@ -41,6 +41,7 @@ describe('shared observer trust configuration', () => {
       { CRON_SECRET: 'short' },
       { REGISTRY_SOURCE_API_KEY: '' },
       { REGISTRY_SOURCE_API_KEY: 'short' },
+      { OBSERVER_SCHEMA: 'public' },
       { OBSERVER_SCHEMA: 'public;DROP' },
     ]) expect(() => loadSharedObserverConfig({ ...valid, ...changed })).toThrow()
   })

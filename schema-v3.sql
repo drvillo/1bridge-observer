@@ -1,6 +1,7 @@
 -- Observer schema v3: independently supplied, exact known receipts. Run only
 -- inside the installer's transaction after checking the installed catalog.
 SELECT pg_advisory_xact_lock(6704462056185601401);
+SELECT set_config('search_path', 'observer', true);
 
 DO $observer_v3_preflight$
 DECLARE
@@ -15,11 +16,11 @@ BEGIN
     OR previous_digest IS NULL OR previous_digest !~ '^[0-9a-f]{64}$' THEN
     RAISE EXCEPTION 'Missing or malformed observer migration digest';
   END IF;
-  IF to_regclass(format('%I.observer_schema_versions', current_schema())) IS NULL THEN
+  IF to_regclass(format('%I.observer_schema_versions', 'observer')) IS NULL THEN
     RAISE EXCEPTION 'Observer v2 schema must be installed before v3';
   END IF;
   SELECT count(*), min(version), min(schema_digest)
-    INTO marker_count, marker_version, marker_digest FROM observer_schema_versions;
+    INTO marker_count, marker_version, marker_digest FROM observer.observer_schema_versions;
   IF marker_count <> 1 OR NOT (
     (marker_version = 2 AND marker_digest = previous_digest)
     OR (marker_version = 3 AND marker_digest = expected_digest)
@@ -30,7 +31,7 @@ BEGIN
     SELECT count(*) INTO table_count
       FROM pg_class AS object
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema()
+      WHERE namespace.nspname = 'observer'
         AND object.relkind IN ('r', 'p')
         AND object.relname IN (
           'observer_schema_versions', 'observer_feeds', 'observer_cursors',
@@ -45,13 +46,13 @@ BEGIN
   PERFORM set_config('observer.migrating_from_v2',
     CASE WHEN marker_version = 2 THEN 'yes' ELSE 'no' END, true);
   IF marker_version = 2 THEN
-    EXECUTE 'ALTER TABLE observer_schema_versions DROP CONSTRAINT observer_schema_versions_version_check';
+    EXECUTE 'ALTER TABLE observer.observer_schema_versions DROP CONSTRAINT observer_schema_versions_version_check';
   END IF;
 END;
 $observer_v3_preflight$;
 
-CREATE TABLE IF NOT EXISTS observer_known_receipts (
-  feed_id text NOT NULL REFERENCES observer_feeds(feed_id) ON DELETE RESTRICT,
+CREATE TABLE IF NOT EXISTS observer.observer_known_receipts (
+  feed_id text NOT NULL REFERENCES observer.observer_feeds(feed_id) ON DELETE RESTRICT,
   receipt_hash text NOT NULL CHECK (receipt_hash ~ '^[0-9a-f]{64}$'),
   leaf_index bigint NOT NULL CHECK (leaf_index BETWEEN 0 AND 9007199254740991),
   checkpoint_hash text NOT NULL CHECK (checkpoint_hash ~ '^[0-9a-f]{64}$'),
@@ -60,16 +61,16 @@ CREATE TABLE IF NOT EXISTS observer_known_receipts (
   PRIMARY KEY (feed_id, receipt_hash)
 );
 CREATE INDEX IF NOT EXISTS observer_known_receipts_feed_index_idx
-  ON observer_known_receipts(feed_id, leaf_index);
+  ON observer.observer_known_receipts(feed_id, leaf_index);
 
 DO $observer_v3_marker$
 DECLARE marker_version integer;
 BEGIN
-  SELECT version INTO marker_version FROM observer_schema_versions;
+  SELECT version INTO marker_version FROM observer.observer_schema_versions;
   IF marker_version = 2 THEN
-    UPDATE observer_schema_versions
+    UPDATE observer.observer_schema_versions
       SET version = 3, schema_digest = current_setting('observer.schema_digest');
-    EXECUTE 'ALTER TABLE observer_schema_versions ADD CONSTRAINT observer_schema_versions_version_check CHECK (version = 3)';
+    EXECUTE 'ALTER TABLE observer.observer_schema_versions ADD CONSTRAINT observer_schema_versions_version_check CHECK (version = 3)';
   END IF;
 END;
 $observer_v3_marker$;
@@ -88,7 +89,7 @@ BEGIN
         ORDER BY object.relname)
       FROM pg_class AS object
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     ),
     'columns', (
       SELECT jsonb_agg(jsonb_build_array(object.relname, column_entry.attnum,
@@ -101,7 +102,7 @@ BEGIN
       JOIN pg_attribute AS column_entry ON column_entry.attrelid = object.oid
       LEFT JOIN pg_attrdef AS default_entry
         ON default_entry.adrelid = object.oid AND default_entry.adnum = column_entry.attnum
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
         AND object.relkind IN ('r', 'p') AND column_entry.attnum > 0
         AND NOT column_entry.attisdropped
     ),
@@ -112,7 +113,7 @@ BEGIN
       FROM pg_constraint AS constraint_entry
       JOIN pg_class AS object ON object.oid = constraint_entry.conrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     ),
     'indexes', (
       SELECT jsonb_agg(jsonb_build_array(object.relname, index_object.relname,
@@ -121,7 +122,7 @@ BEGIN
       JOIN pg_class AS object ON object.oid = index_entry.indrelid
       JOIN pg_class AS index_object ON index_object.oid = index_entry.indexrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     ),
     'triggers', (
       SELECT jsonb_agg(jsonb_build_array(object.relname, trigger_entry.tgname,
@@ -129,7 +130,7 @@ BEGIN
       FROM pg_trigger AS trigger_entry
       JOIN pg_class AS object ON object.oid = trigger_entry.tgrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
         AND NOT trigger_entry.tgisinternal
     ),
     'policies', (
@@ -141,7 +142,7 @@ BEGIN
       FROM pg_policy AS policy_entry
       JOIN pg_class AS object ON object.oid = policy_entry.polrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     ),
     'sequences', (
       SELECT jsonb_agg(jsonb_build_array(object.relname, sequence_entry.seqtypid::regtype::text,
@@ -151,14 +152,14 @@ BEGIN
       FROM pg_sequence AS sequence_entry
       JOIN pg_class AS object ON object.oid = sequence_entry.seqrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     )
   )::text) INTO actual_fingerprint;
 
-  SELECT catalog_fingerprint INTO stored_fingerprint FROM observer_schema_versions WHERE version = 3;
+  SELECT catalog_fingerprint INTO stored_fingerprint FROM observer.observer_schema_versions WHERE version = 3;
   IF stored_fingerprint IS DISTINCT FROM actual_fingerprint THEN
     IF current_setting('observer.migrating_from_v2', true) = 'yes' THEN
-      UPDATE observer_schema_versions SET catalog_fingerprint = actual_fingerprint WHERE version = 3;
+      UPDATE observer.observer_schema_versions SET catalog_fingerprint = actual_fingerprint WHERE version = 3;
     ELSE
       RAISE EXCEPTION 'Observer schema catalog has changed';
     END IF;

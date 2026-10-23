@@ -1,5 +1,5 @@
 import { pathToFileURL } from 'node:url'
-import { installObserverSchema, openObserverStore, type ObserverStore } from '../src/lib/store.ts'
+import { installObserverSchema, OBSERVER_SCHEMA, openObserverStore, type ObserverStore } from '../src/lib/store.ts'
 
 interface MigrationEnvironment {
   [key: string]: string | undefined
@@ -8,7 +8,7 @@ interface MigrationEnvironment {
 }
 
 interface MigrationDependencies {
-  openStore(connectionString: string, schema?: string): ObserverStore
+  openStore(connectionString: string): ObserverStore
   installSchema(store: ObserverStore): Promise<void>
 }
 
@@ -23,8 +23,11 @@ export async function migrateObserverSchema(
 ): Promise<void> {
   const databaseUrl = env.DATABASE_URL
   if (!databaseUrl) throw new Error('DATABASE_URL is required to migrate the observer schema')
+  if (env.OBSERVER_SCHEMA !== undefined && env.OBSERVER_SCHEMA !== OBSERVER_SCHEMA) {
+    throw new Error('Invalid OBSERVER_SCHEMA')
+  }
 
-  const store = dependencies.openStore(databaseUrl, env.OBSERVER_SCHEMA)
+  const store = dependencies.openStore(databaseUrl)
   try {
     await dependencies.installSchema(store)
   } finally {
@@ -35,5 +38,5 @@ export async function migrateObserverSchema(
 const entrypoint = process.argv[1]
 if (entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
   await migrateObserverSchema(process.env)
-  console.log(`Observer schema is up to date: ${process.env.OBSERVER_SCHEMA ?? 'public'}`)
+  console.log(`Observer schema is up to date: ${OBSERVER_SCHEMA}`)
 }

@@ -10,7 +10,7 @@ export async function GET(): Promise<Response> {
     const config = loadSharedReportReadConfig(process.env)
     const observerKey = await importSigningPublicKey(process.env.OBSERVER_SIGNING_PUBLIC_KEY ?? '')
     const pin = await verifyRegistryPin(config)
-    const store = getRuntimeObserverStore(config.databaseUrl, config.databaseSchema)
+    const store = getRuntimeObserverStore(config.databaseUrl)
     const latest = await readLatestRegistryWitness(store, pin, observerKey)
     return Response.json(latest ?? { status: 'not_yet_witnessed' }, {
       status: latest ? 200 : 404,

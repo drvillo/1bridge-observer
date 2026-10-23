@@ -14,7 +14,7 @@ export async function GET(request: Request): Promise<Response> {
   }
   try {
     const context = await loadRegistryWitnessContext(process.env)
-    const store = getRuntimeObserverStore(context.config.databaseUrl, context.config.databaseSchema)
+    const store = getRuntimeObserverStore(context.config.databaseUrl)
     const result = await pollRegistryWitnessOnce(store, context.config, context.signer)
     const reportHash = result.report
       ? createHash('sha256').update(canonicalBytes(result.report)).digest('hex') : null

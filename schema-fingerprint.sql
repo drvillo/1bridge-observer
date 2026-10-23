@@ -1,4 +1,4 @@
--- Read-only fingerprint for an installed v1 or v2 observer schema.
+-- Read-only fingerprint for the installed observer schema.
 SELECT md5(jsonb_build_object(
     'objects', (
       SELECT jsonb_agg(jsonb_build_array(object.relname, object.relkind,
@@ -6,7 +6,7 @@ SELECT md5(jsonb_build_object(
         ORDER BY object.relname)
       FROM pg_class AS object
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     ),
     'columns', (
       SELECT jsonb_agg(jsonb_build_array(object.relname, column_entry.attnum,
@@ -19,7 +19,7 @@ SELECT md5(jsonb_build_object(
       JOIN pg_attribute AS column_entry ON column_entry.attrelid = object.oid
       LEFT JOIN pg_attrdef AS default_entry
         ON default_entry.adrelid = object.oid AND default_entry.adnum = column_entry.attnum
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
         AND object.relkind IN ('r', 'p') AND column_entry.attnum > 0
         AND NOT column_entry.attisdropped
     ),
@@ -30,7 +30,7 @@ SELECT md5(jsonb_build_object(
       FROM pg_constraint AS constraint_entry
       JOIN pg_class AS object ON object.oid = constraint_entry.conrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     ),
     'indexes', (
       SELECT jsonb_agg(jsonb_build_array(object.relname, index_object.relname,
@@ -39,7 +39,7 @@ SELECT md5(jsonb_build_object(
       JOIN pg_class AS object ON object.oid = index_entry.indrelid
       JOIN pg_class AS index_object ON index_object.oid = index_entry.indexrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     ),
     'triggers', (
       SELECT jsonb_agg(jsonb_build_array(object.relname, trigger_entry.tgname,
@@ -47,7 +47,7 @@ SELECT md5(jsonb_build_object(
       FROM pg_trigger AS trigger_entry
       JOIN pg_class AS object ON object.oid = trigger_entry.tgrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
         AND NOT trigger_entry.tgisinternal
     ),
     'policies', (
@@ -59,7 +59,7 @@ SELECT md5(jsonb_build_object(
       FROM pg_policy AS policy_entry
       JOIN pg_class AS object ON object.oid = policy_entry.polrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     ),
     'sequences', (
       SELECT jsonb_agg(jsonb_build_array(object.relname, sequence_entry.seqtypid::regtype::text,
@@ -69,6 +69,6 @@ SELECT md5(jsonb_build_object(
       FROM pg_sequence AS sequence_entry
       JOIN pg_class AS object ON object.oid = sequence_entry.seqrelid
       JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace
-      WHERE namespace.nspname = current_schema() AND left(object.relname, 9) = 'observer_'
+      WHERE namespace.nspname = 'observer' AND left(object.relname, 9) = 'observer_'
     )
   )::text) AS catalog_fingerprint;

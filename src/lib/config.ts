@@ -6,6 +6,7 @@ import {
   verifyRegistryCheckpoint,
   type SignedRegistryCheckpoint,
 } from '@drvillo/1bridge-authority'
+import { OBSERVER_SCHEMA } from './store'
 
 export interface SharedReportReadConfig {
   databaseUrl: string
@@ -43,12 +44,11 @@ function loadDatabaseConfig(env: Environment): Pick<SharedReportReadConfig, 'dat
     throw new Error('Invalid DATABASE_URL')
   }
 
-  const databaseSchema = env.OBSERVER_SCHEMA === undefined ? 'public' : env.OBSERVER_SCHEMA
-  if (!/^[a-z_][a-z0-9_]{0,62}$/.test(databaseSchema)) {
+  if (env.OBSERVER_SCHEMA !== undefined && env.OBSERVER_SCHEMA !== OBSERVER_SCHEMA) {
     throw new Error('Invalid OBSERVER_SCHEMA')
   }
 
-  return { databaseUrl, databaseSchema }
+  return { databaseUrl, databaseSchema: OBSERVER_SCHEMA }
 }
 
 /** Shared deployments pin one publisher and signed empty checkpoint, not customer feeds. */

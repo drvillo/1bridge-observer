@@ -2,16 +2,15 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import pg, { type PoolClient } from 'pg'
 
-const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/
+export const OBSERVER_SCHEMA = 'observer'
 export interface ObserverStore { close(): Promise<void> }
 
-interface StoreConnection { pool: pg.Pool; schema: string }
+interface StoreConnection { pool: pg.Pool }
 const STORE_CONNECTIONS_KEY = Symbol.for('1bridge-observer.store-connections')
 const RUNTIME_STORE_KEY = Symbol.for('1bridge-observer.runtime-store')
 
 interface RuntimeObserverStoreState {
   connectionString: string
-  schema: string
   store: ObserverStore
 }
 
@@ -35,15 +34,12 @@ function connectionFor(store: ObserverStore): StoreConnection {
 }
 
 export async function transaction<T>(store: ObserverStore, work: (client: PoolClient) => Promise<T>): Promise<T> {
-  const { pool, schema } = connectionFor(store)
+  const { pool } = connectionFor(store)
   const client = await pool.connect()
   let destroy = false
   try {
     await client.query('BEGIN')
-    const namespace = await client.query<{ exists: boolean }>(
-      'SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname = $1) AS exists', [schema])
-    if (!namespace.rows[0]?.exists) throw new Error('Observer database schema does not exist')
-    await client.query("SELECT set_config('search_path', $1, true)", [schema])
+    await client.query("SELECT set_config('search_path', $1, true)", [OBSERVER_SCHEMA])
     const result = await work(client)
     await client.query('COMMIT')
     return result
@@ -55,29 +51,28 @@ export async function transaction<T>(store: ObserverStore, work: (client: PoolCl
   }
 }
 
-/** Opens one small, observer-operator-owned Postgres pool under a pre-created schema. */
-export function openObserverStore(connectionString: string, schema = 'public'): ObserverStore {
+/** Opens one small Postgres pool. Migrations and queries use schema observer. */
+export function openObserverStore(connectionString: string): ObserverStore {
   if (typeof connectionString !== 'string' || !connectionString) throw new TypeError('Expected observer database URL')
-  if (typeof schema !== 'string' || !SCHEMA.test(schema)) throw new TypeError('Expected simple observer schema name')
   const pool = new pg.Pool({ connectionString, max: 2, connectionTimeoutMillis: 5_000 })
   pool.on('error', error => { console.error('Observer idle database connection failed:', error.message) })
   const store: ObserverStore = Object.freeze({ close: async () => { connections.delete(store); await pool.end() } })
-  connections.set(store, { pool, schema })
+  connections.set(store, { pool })
   return store
 }
 
-export function getRuntimeObserverStore(connectionString: string, schema = 'public'): ObserverStore {
+export function getRuntimeObserverStore(connectionString: string): ObserverStore {
   const runtime = observerStoreGlobal()
   const current = runtime[RUNTIME_STORE_KEY]
   if (current) {
-    if (current.connectionString !== connectionString || current.schema !== schema) {
+    if (current.connectionString !== connectionString) {
       throw new TypeError('Observer runtime store configuration changed')
     }
     return current.store
   }
 
-  const store = openObserverStore(connectionString, schema)
-  runtime[RUNTIME_STORE_KEY] = { connectionString, schema, store }
+  const store = openObserverStore(connectionString)
+  runtime[RUNTIME_STORE_KEY] = { connectionString, store }
   return store
 }
 
@@ -105,11 +100,11 @@ export async function installObserverSchema(store: ObserverStore): Promise<void>
   await transaction(store, async client => {
     await client.query('SELECT pg_advisory_xact_lock(6704462056185601401)')
     const marker = await client.query<{ exists: boolean }>(
-      "SELECT to_regclass(format('%I.observer_schema_versions', current_schema())) IS NOT NULL AS exists")
+      "SELECT to_regclass('observer.observer_schema_versions') IS NOT NULL AS exists")
     let version: number | null = null
     if (marker.rows[0]?.exists) {
       const current = await client.query<{ version: number; catalog_fingerprint: string }>(
-        'SELECT version, catalog_fingerprint FROM observer_schema_versions')
+        'SELECT version, catalog_fingerprint FROM observer.observer_schema_versions')
       if (current.rows.length !== 1) throw new TypeError('Invalid observer schema marker')
       version = current.rows[0]!.version
       if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5) throw new TypeError('Unsupported observer schema marker')
@@ -140,7 +135,7 @@ export async function installObserverSchema(store: ObserverStore): Promise<void>
       await client.query("SELECT set_config('observer.schema_digest', $1, true)", [v5Digest])
       await client.query(v5)
       const fingerprint = await client.query<{ catalog_fingerprint: string }>(fingerprintSql)
-      await client.query('UPDATE observer_schema_versions SET catalog_fingerprint=$1',
+      await client.query('UPDATE observer.observer_schema_versions SET catalog_fingerprint=$1',
         [fingerprint.rows[0]!.catalog_fingerprint])
     }
   })
