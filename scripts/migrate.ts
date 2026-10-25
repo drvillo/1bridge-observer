@@ -4,7 +4,6 @@ import { installObserverSchema, OBSERVER_SCHEMA, openObserverStore, type Observe
 interface MigrationEnvironment {
   [key: string]: string | undefined
   DATABASE_URL?: string
-  OBSERVER_SCHEMA?: string
 }
 
 interface MigrationDependencies {
@@ -23,9 +22,6 @@ export async function migrateObserverSchema(
 ): Promise<void> {
   const databaseUrl = env.DATABASE_URL
   if (!databaseUrl) throw new Error('DATABASE_URL is required to migrate the observer schema')
-  if (env.OBSERVER_SCHEMA !== undefined && env.OBSERVER_SCHEMA !== OBSERVER_SCHEMA) {
-    throw new Error('Invalid OBSERVER_SCHEMA')
-  }
 
   const store = dependencies.openStore(databaseUrl)
   try {
