@@ -6,11 +6,9 @@ import {
   verifyRegistryCheckpoint,
   type SignedRegistryCheckpoint,
 } from '@drvillo/1bridge-authority'
-import { OBSERVER_SCHEMA } from './store'
 
 export interface SharedReportReadConfig {
   databaseUrl: string
-  databaseSchema: string
   publisherPublicKeySpki: string
   signedGenesisEncoded: string
 }
@@ -23,7 +21,7 @@ export interface SharedObserverConfig extends SharedReportReadConfig {
 
 type Environment = Record<string, string | undefined>
 
-function loadDatabaseConfig(env: Environment): Pick<SharedReportReadConfig, 'databaseUrl' | 'databaseSchema'> {
+function loadDatabaseConfig(env: Environment): Pick<SharedReportReadConfig, 'databaseUrl'> {
   const databaseUrl = env.DATABASE_URL
   if (!databaseUrl) {
     throw new Error('Invalid DATABASE_URL')
@@ -44,11 +42,7 @@ function loadDatabaseConfig(env: Environment): Pick<SharedReportReadConfig, 'dat
     throw new Error('Invalid DATABASE_URL')
   }
 
-  if (env.OBSERVER_SCHEMA !== undefined && env.OBSERVER_SCHEMA !== OBSERVER_SCHEMA) {
-    throw new Error('Invalid OBSERVER_SCHEMA')
-  }
-
-  return { databaseUrl, databaseSchema: OBSERVER_SCHEMA }
+  return { databaseUrl }
 }
 
 /** Shared deployments pin one publisher and signed empty checkpoint, not customer feeds. */

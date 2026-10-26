@@ -18,7 +18,8 @@ describe('shared observer trust configuration', () => {
     const config = loadSharedObserverConfig(valid)
     expect(config).toMatchObject({ sourceBaseUrl: 'https://evidence.example',
       registrySourceApiKey: valid.REGISTRY_SOURCE_API_KEY,
-      databaseSchema: 'observer', publisherPublicKeySpki: vector.publisherPublicKey })
+      databaseUrl: valid.DATABASE_URL, publisherPublicKeySpki: vector.publisherPublicKey })
+    expect('databaseSchema' in config).toBe(false)
     expect('feedId' in config).toBe(false)
     const pin = await verifyRegistryPin(config)
     expect(pin.signedGenesis).toEqual(vector.genesis)
@@ -33,7 +34,7 @@ describe('shared observer trust configuration', () => {
       REGISTRY_SIGNED_GENESIS: encodeBase64Url(canonicalBytes(vector.headOne)) }))).rejects.toThrow()
   })
 
-  it('rejects unsafe origin, missing pin, weak cron secret and invalid schema', () => {
+  it('rejects unsafe origin, missing pin and weak cron secret', () => {
     for (const changed of [
       { SOURCE_BASE_URL: 'http://remote.example/' },
       { REGISTRY_PUBLISHER_PUBLIC_KEY: '' },
@@ -41,9 +42,13 @@ describe('shared observer trust configuration', () => {
       { CRON_SECRET: 'short' },
       { REGISTRY_SOURCE_API_KEY: '' },
       { REGISTRY_SOURCE_API_KEY: 'short' },
-      { OBSERVER_SCHEMA: 'public' },
-      { OBSERVER_SCHEMA: 'public;DROP' },
     ]) expect(() => loadSharedObserverConfig({ ...valid, ...changed })).toThrow()
+  })
+
+  it('ignores OBSERVER_SCHEMA because the schema name is fixed in the migrations', () => {
+    const config = loadSharedObserverConfig({ ...valid, OBSERVER_SCHEMA: 'public' })
+    expect(config).toEqual(loadSharedObserverConfig(valid))
+    expect(config).not.toHaveProperty('databaseSchema')
   })
 
   it('permits HTTP loopback only in local development or tests', () => {

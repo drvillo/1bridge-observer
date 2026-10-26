@@ -33,7 +33,7 @@ To check the same suite against a running **local** Supabase Postgres container,
 
 Provision Postgres that you operate. A Supabase project works. Copy the connection string from [Supabase `DATABASE_URL`](#supabase-database_url).
 
-The migrations create schema `observer` and qualify every table, index, and sequence with that name. `search_path` cannot redirect them into `public`. On a shared Supabase database this keeps the objects out of the 1bridge `public` schema. The connection role needs permission to create a schema; the Supabase `postgres` role has it. Leave `OBSERVER_SCHEMA` unset. If it is set to anything other than `observer`, startup and migration fail.
+The migrations create schema `observer` and qualify every table, index, and sequence with that name. `search_path` cannot redirect them into `public`. On a shared Supabase database this keeps the objects out of the 1bridge `public` schema. The connection role needs permission to create a schema; the Supabase `postgres` role has it.
 
 v1–v5 migrations run in one transaction and check the installed catalog fingerprint. The v5 tables hold the compact witness cursor, signed reports and bounded findings; legacy v1–v4 rows remain historical.
 
@@ -90,7 +90,7 @@ What each name means, and where the value comes from, is in [Environment variabl
 
 ### 6. Deploy
 
-`vercel.json` runs `pnpm db:migrate:deploy && pnpm build`, then calls `GET /api/registry-witness/poll` daily at 08:00 UTC. The Vercel build environment therefore needs `DATABASE_URL`, and a failed migration stops the deployment before `next build`. Do not set `OBSERVER_SCHEMA` unless the value is `observer`. Warm function instances reuse one small Postgres pool for reads and polls; runtime requests do not take migration locks or close that pool after each response. One invocation requests the latest signed head and, if it changed, one consistency proof. It signs a fresh report timestamp after an unchanged valid head or a retained protocol finding. A source outage returns `unavailable`, preserves the last accepted root, and never blocks 1Bridge. Invoke the protected route manually with the same bearer token when you need another observation. Public `GET /api/registry-witness/latest` returns the latest signed global report. Pin the observer public key independently before trusting it.
+`vercel.json` runs `pnpm db:migrate:deploy && pnpm build`, then calls `GET /api/registry-witness/poll` daily at 08:00 UTC. The Vercel build environment therefore needs `DATABASE_URL`, and a failed migration stops the deployment before `next build`. Warm function instances reuse one small Postgres pool for reads and polls; runtime requests do not take migration locks or close that pool after each response. One invocation requests the latest signed head and, if it changed, one consistency proof. It signs a fresh report timestamp after an unchanged valid head or a retained protocol finding. A source outage returns `unavailable`, preserves the last accepted root, and never blocks 1Bridge. Invoke the protected route manually with the same bearer token when you need another observation. Public `GET /api/registry-witness/latest` returns the latest signed global report. Pin the observer public key independently before trusting it.
 
 To deploy an isolated Preview, Production, or custom environment:
 
@@ -174,10 +174,6 @@ Unpadded base64url of the canonical [signed empty registry genesis](#signed-empt
 **`DATABASE_URL`**
 
 `postgresql://` or `postgres://` URI with a host and a database name. No URL fragment. For Supabase, use the transaction pooler URI in the section above. The password in the URI is the database password from **Project Settings → Database**.
-
-**`OBSERVER_SCHEMA`**
-
-Optional check. The migrations always use schema `observer`. Omit this variable. A value other than `observer` fails configuration and migration.
 
 **`CRON_SECRET`**
 
